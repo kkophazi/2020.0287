@@ -19,19 +19,19 @@ end
 """
     LevelSet
 
-Functor object for using level-set regularization in an L-shaped algorithm. Create by supplying an [`LV`](@ref) object through `regularize ` in the `LShapedSolver` factory function and then pass to a `StochasticPrograms.jl` model.
+Functor object for using level-set regularization in an L-shaped algorithm. Create by supplying an [`LV`](@ref) object through `regularize` in `LShaped.Optimizer` or by setting the [`Regularizer`](@ref) attribute.
 
 ...
 # Parameters
 - `λ::AbstractFloat = 0.5`: Controls the level position L = (1-λ)*θ + λ*Q̃, a convex combination of the current lower and upper bound.
-- `penaltyterm::PenaltyTerm = Quadratic`: Specify penaltyterm variant ([`Quadratic`](@ref), [`Linearized`](@ref), [`InfNorm`](@ref), [`ManhattanNorm`][@ref])
+- `penaltyterm::PenaltyTerm = Quadratic`: Specify penaltyterm variant ([`Quadratic`](@ref), [`InfNorm`](@ref), [`ManhattanNorm`][@ref])
 ...
 """
-struct LevelSet{T <: AbstractFloat, A <: AbstractVector, PT <: AbstractPenaltyterm} <: AbstractRegularization
+struct LevelSet{T <: AbstractFloat, A <: AbstractVector, PT <: AbstractPenaltyTerm} <: AbstractRegularization
     data::LVData{T}
     parameters::LVParameters{T}
 
-    decisions::Decisions
+    decisions::DecisionMap
     projection_targets::Vector{MOI.VariableIndex}
     ξ::Vector{Decision{T}}
 
@@ -41,11 +41,11 @@ struct LevelSet{T <: AbstractFloat, A <: AbstractVector, PT <: AbstractPenaltyte
 
     penaltyterm::PT
 
-    function LevelSet(decisions::Decisions, ξ₀::AbstractVector, penaltyterm::AbstractPenaltyterm; kw...)
+    function LevelSet(decisions::DecisionMap, ξ₀::AbstractVector, penaltyterm::AbstractPenaltyTerm; kw...)
         T = promote_type(eltype(ξ₀), Float32)
         A = Vector{T}
         ξ = map(ξ₀) do val
-            Decision(val, T)
+            KnownDecision(val, T)
         end
         PT = typeof(penaltyterm)
         return new{T, A, PT}(LVData{T}(),
@@ -67,10 +67,10 @@ function initialize_regularization!(lshaped::AbstractLShaped, lv::LevelSet)
     initialize_penaltyterm!(lv.penaltyterm,
                             lshaped.master,
                             1.0,
-                            lv.decisions.undecided,
+                            all_decisions(lv.decisions),
                             lv.projection_targets)
     # Delete penalty-term
-    StochasticPrograms.remove_penalty!(lv.penaltyterm, lshaped.master)
+    remove_penalty!(lv.penaltyterm, lshaped.master)
     return nothing
 end
 
@@ -85,6 +85,7 @@ function restore_regularized_master!(lshaped::AbstractLShaped, lv::LevelSet)
     # Delete projection targets
     for var in lv.projection_targets
         MOI.delete(lshaped.master, var)
+        StochasticPrograms.remove_decision!(lv.decisions, var)
     end
     empty!(lv.projection_targets)
     return nothing
@@ -93,13 +94,13 @@ end
 function filter_variables!(lv::LevelSet, list::Vector{MOI.VariableIndex})
     # Filter projection targets
     filter!(vi -> !(vi in lv.projection_targets), list)
-    # Filter any auxilliary penaltyterm variables
+    # Filter any auxiliary penaltyterm variables
     remove_penalty_variables!(lv.penaltyterm, list)
     return nothing
 end
 
 function filter_constraints!(lv::LevelSet, list::Vector{<:CI})
-    # Filter any auxilliary penaltyterm constraints
+    # Filter any auxiliary penaltyterm constraints
     remove_penalty_constraints!(lv.penaltyterm, list)
     # Filter level-set constraint
     i = something(findfirst(isequal(lv.data.constraint), list), 0)
@@ -157,7 +158,7 @@ function take_step!(lshaped::AbstractLShaped, lv::LevelSet)
         lv.data.constraint = LVConstraint(0)
     end
     # Delete penalty-term
-    StochasticPrograms.remove_penalty!(lv.penaltyterm, lshaped.master)
+    remove_penalty!(lv.penaltyterm, lshaped.master)
     # Re-add objective
     F = typeof(objective)
     MOI.set(lshaped.master, MOI.ObjectiveFunction{F}(), objective)
@@ -179,7 +180,7 @@ function take_step!(lshaped::AbstractLShaped, lv::LevelSet)
     initialize_penaltyterm!(lv.penaltyterm,
                             lshaped.master,
                             1.0,
-                            lv.decisions.undecided,
+                            all_decisions(lv.decisions),
                             lv.projection_targets)
     # Add level constraint
     lv.data.constraint =
@@ -209,27 +210,27 @@ end
 """
     LV
 
-Factory object for [`LevelSet`](@ref). Pass to `regularize ` in the `LShapedSolver` factory function. Equivalent factory calls: `LV`, `WithLV`, `LevelSet`, `WithLevelSets`. See ?LevelSet for parameter descriptions.
+Factory object for [`LevelSet`](@ref). Pass to `regularize` in `LShaped.Optimizer` or set the [`Regularizer`](@ref) attribute. Equivalent factory calls: `LV`, `WithLV`, `LevelSet`, `WithLevelSets`. See ?LevelSet for parameter descriptions.
 
 """
 mutable struct LV <: AbstractRegularizer
-    penaltyterm::AbstractPenaltyterm
+    penaltyterm::AbstractPenaltyTerm
     parameters::LVParameters{Float64}
 end
-LV(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(kw...))
-WithLV(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(kw...))
-LevelSet(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(kw...))
-WithLevelSets(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(kw...))
+LV(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(; kw...))
+WithLV(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(; kw...))
+LevelSet(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(; kw...))
+WithLevelSets(; penaltyterm = Quadratic(), kw...) = LV(penaltyterm, LVParameters(; kw...))
 
-function MOI.get(lv::LV, ::RegularizationPenaltyterm)
+function MOI.get(lv::LV, ::RegularizationPenaltyTerm)
     return lv.penaltyterm
 end
 
-function MOI.set(lv::LV, ::RegularizationPenaltyterm, penaltyterm::AbstractPenaltyterm)
+function MOI.set(lv::LV, ::RegularizationPenaltyTerm, penaltyterm::AbstractPenaltyTerm)
     return lv.penaltyterm = penaltyterm
 end
 
-function (lv::LV)(decisions::Decisions, x::AbstractVector)
+function (lv::LV)(decisions::DecisionMap, x::AbstractVector)
     return LevelSet(decisions, x, lv.penaltyterm; type2dict(lv.parameters)...)
 end
 

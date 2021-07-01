@@ -19,7 +19,7 @@ end
 """
     RegularizedDecomposition
 
-Functor object for using regularized decomposition regularization in an L-shaped algorithm. Create by supplying an [`RD`](@ref) object through `regularize ` in the `LShapedSolver` factory function and then pass to a `StochasticPrograms.jl` model.
+Functor object for using regularized decomposition regularization in an L-shaped algorithm. Create by supplying an [`RD`](@ref) object through `regularize` in `LShaped.Optimizer` or by setting the [`Regularizer`](@ref) attribute.
 
 ...
 # Parameters
@@ -27,14 +27,14 @@ Functor object for using regularized decomposition regularization in an L-shaped
 - `σ̅::AbstractFloat = 4.0`: Maximum value of the regularization parameter.
 - `σ̲::AbstractFloat = 0.5`: Minimum value of the regularization parameter.
 - `log::Bool = true`: Specifices if L-shaped procedure should be logged on standard output or not.
-- `penaltyterm::PenaltyTerm = Quadratic`: Specify penaltyterm variant ([`Quadratic`](@ref), [`Linearized`](@ref), [`InfNorm`](@ref), [`ManhattanNorm`][@ref])
+- `penaltyterm::PenaltyTerm = Quadratic`: Specify penaltyterm variant ([`Quadratic`](@ref), [`InfNorm`](@ref), [`ManhattanNorm`][@ref])
 ...
 """
-struct RegularizedDecomposition{T <: AbstractFloat, A <: AbstractVector, PT <: AbstractPenaltyterm} <: AbstractRegularization
+struct RegularizedDecomposition{T <: AbstractFloat, A <: AbstractVector, PT <: AbstractPenaltyTerm} <: AbstractRegularization
     data::RDData{T}
     parameters::RDParameters{T}
 
-    decisions::Decisions
+    decisions::DecisionMap
     projection_targets::Vector{MOI.VariableIndex}
     ξ::Vector{Decision{T}}
 
@@ -44,11 +44,11 @@ struct RegularizedDecomposition{T <: AbstractFloat, A <: AbstractVector, PT <: A
 
     penaltyterm::PT
 
-    function RegularizedDecomposition(decisions::Decisions, ξ₀::AbstractVector, penaltyterm::AbstractPenaltyterm; kw...)
+    function RegularizedDecomposition(decisions::DecisionMap, ξ₀::AbstractVector, penaltyterm::AbstractPenaltyTerm; kw...)
         T = promote_type(eltype(ξ₀), Float32)
         A = Vector{T}
         ξ = map(ξ₀) do val
-            Decision(val, T)
+            KnownDecision(val, T)
         end
         PT = typeof(penaltyterm)
         return new{T, A, PT}(RDData{T}(),
@@ -74,7 +74,7 @@ function initialize_regularization!(lshaped::AbstractLShaped, rd::RegularizedDec
     initialize_penaltyterm!(rd.penaltyterm,
                             lshaped.master,
                             1 / (2 * σ),
-                            rd.decisions.undecided,
+                            all_decisions(rd.decisions),
                             rd.projection_targets)
     return nothing
 end
@@ -85,6 +85,7 @@ function restore_regularized_master!(lshaped::AbstractLShaped, rd::RegularizedDe
     # Delete projection targets
     for var in rd.projection_targets
         MOI.delete(lshaped.master, var)
+        StochasticPrograms.remove_decision!(rd.decisions, var)
     end
     empty!(rd.projection_targets)
     return nothing
@@ -93,13 +94,13 @@ end
 function filter_variables!(rd::RegularizedDecomposition, list::Vector{MOI.VariableIndex})
     # Filter projection targets
     filter!(vi -> !(vi in rd.projection_targets), list)
-    # Filter any auxilliary penaltyterm variables
+    # Filter any auxiliary penaltyterm variables
     remove_penalty_variables!(rd.penaltyterm, list)
     return nothing
 end
 
 function filter_constraints!(rd::RegularizedDecomposition, list::Vector{<:CI})
-    # Filter any auxilliary penaltyterm constraints
+    # Filter any auxiliary penaltyterm constraints
     remove_penalty_constraints!(rd.penaltyterm, list)
     return nothing
 end
@@ -154,7 +155,7 @@ function take_step!(lshaped::AbstractLShaped, rd::RegularizedDecomposition)
         update_penaltyterm!(rd.penaltyterm,
                             lshaped.master,
                             1 / (2 * σ),
-                            rd.decisions.undecided,
+                            all_decisions(rd.decisions),
                             rd.projection_targets)
     end
     return nothing
@@ -165,27 +166,27 @@ end
 """
     RD
 
-Factory object for [`RegularizedDecomposition`](@ref). Pass to `regularize ` in the `LShapedSolver` factory function. Equivalent factory calls: `RD`, `WithRD`, `RegularizedDecomposition`, `WithRegularizedDecomposition`. See ?RegularizedDecomposition for parameter descriptions.
+Factory object for [`RegularizedDecomposition`](@ref). Pass to `regularize` in `LShaped.Optimizer` or set the [`Regularizer`](@ref) attribute. Equivalent factory calls: `RD`, `WithRD`, `RegularizedDecomposition`, `WithRegularizedDecomposition`. See ?RegularizedDecomposition for parameter descriptions.
 
 """
 mutable struct RD <: AbstractRegularizer
-    penaltyterm::AbstractPenaltyterm
+    penaltyterm::AbstractPenaltyTerm
     parameters::RDParameters{Float64}
 end
-RD(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(kw...))
-WithRD(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(kw...))
-RegularizedDecomposition(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(kw...))
-WithRegularizedDecomposition(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(kw...))
+RD(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(; kw...))
+WithRD(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(; kw...))
+RegularizedDecomposition(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(; kw...))
+WithRegularizedDecomposition(; penaltyterm = Quadratic(), kw...) = RD(penaltyterm, RDParameters(; kw...))
 
-function MOI.get(rd::RD, ::RegularizationPenaltyterm)
+function MOI.get(rd::RD, ::RegularizationPenaltyTerm)
     return rd.penaltyterm
 end
 
-function MOI.set(rd::RD, ::RegularizationPenaltyterm, penaltyterm::AbstractPenaltyterm)
+function MOI.set(rd::RD, ::RegularizationPenaltyTerm, penaltyterm::AbstractPenaltyTerm)
     return rd.penaltyterm = penaltyterm
 end
 
-function (rd::RD)(decisions::Decisions, x::AbstractVector)
+function (rd::RD)(decisions::DecisionMap, x::AbstractVector)
     return RegularizedDecomposition(decisions, x, rd.penaltyterm; type2dict(rd.parameters)...)
 end
 

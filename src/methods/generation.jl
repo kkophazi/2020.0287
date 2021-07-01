@@ -10,9 +10,9 @@ function _check_generators(stochasticprogram::StochasticProgram, ::Val{1})
     has_generator(stochasticprogram, :stage_1) || error("First-stage problem not defined in stochastic program. Consider @stage 1.")
     return nothing
 end
-function _check_stage_generator(stochasticprogram::StochasticProgram{N}, s::Integer) where N
-    1 <= s <= N || error("Stage $s not in range 1 to $N.")
-    stage_key = Symbol(:stage_, s)
+function _check_stage_generator(stochasticprogram::StochasticProgram{N}, stage::Integer) where N
+    1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
+    stage_key = Symbol(:stage_, stage)
     has_generator(stochasticprogram, stage_key) || error("Stage problem $stage not defined in stochastic program. Consider @stage $stage.")
     return nothing
 end
@@ -35,7 +35,7 @@ function stage_one_model(stochasticprogram::StochasticProgram; optimizer = nothi
     has_generator(stochasticprogram, :stage_1) || error("First-stage problem not defined in stochastic program. Consider @stage 1.")
     model = optimizer == nothing ? Model() : Model(optimizer)
     # Prepare decisions
-    model.ext[:decisions] = (Decisions(),)
+    model.ext[:decisions] = Decisions(Val{1}(); is_node = true)
     add_decision_bridges!(model)
     # Generate and cache first-stage model
     generator(stochasticprogram, :stage_1)(model, stage_parameters(stochasticprogram, 1))
@@ -61,7 +61,7 @@ function stage_model(stochasticprogram::StochasticProgram{N},
     # Create stage model
     stage_model = optimizer == nothing ? Model() : Model(optimizer)
     # Prepare decisions
-    stage_model.ext[:decisions] = Decisions()
+    stage_model.ext[:decisions] = Decisions(stage; is_node = true)
     add_decision_bridges!(stage_model)
     # Generate and return the stage model
     generator(stochasticprogram, decision_key)(stage_model, decision_params)
@@ -78,29 +78,30 @@ end
 
 function generate_proxy!(stochasticprogram::StochasticProgram{N}) where N
     # First-stage decisions are unique (reuse)
-    stochasticprogram.proxy[1].ext[:decisions] = (stochasticprogram.decisions[1],)
+    proxy(stochasticprogram, 1).ext[:decisions] = Decisions((stochasticprogram.decisions[1],); is_node = true)
     # Generate first stage
     has_generator(stochasticprogram, :stage_1) || error("First-stage problem not defined in stochastic program. Consider @stage 1.")
-    generator(stochasticprogram, :stage_1)(stochasticprogram.proxy[1], stage_parameters(stochasticprogram, 1))
+    generator(stochasticprogram, :stage_1)(proxy(stochasticprogram, 1), stage_parameters(stochasticprogram, 1))
     # Generate remaining stages
     for s in 2:N
         # Initialize decisions
-        stochasticprogram.proxy[s].ext[:decisions] = ntuple(Val{s}()) do i
+        decisions = ntuple(Val{s}()) do i
             if i == s - 1
                 # Known decisions from the previous stages are
                 # the same everywhere.
                 return stochasticprogram.decisions[s]
             end
-            return Decisions()
+            return DecisionMap()
         end
+        proxy(stochasticprogram, s).ext[:decisions] = Decisions(decisions)
         # Check generator
         stage_key = Symbol(:stage_, s)
         decision_key = Symbol(:stage_, s - 1, :_decisions)
         has_generator(stochasticprogram, stage_key) || error("Stage problem $stage not defined in stochastic program. Consider @stage $stage.")
         has_generator(stochasticprogram, decision_key) || error("No decision variables defined in stage problem $(stage-1).")
         # Generate
-        generator(stochasticprogram, decision_key)(stochasticprogram.proxy[s], stage_parameters(stochasticprogram, s-1))
-        generator(stochasticprogram, stage_key)(stochasticprogram.proxy[s], stage_parameters(stochasticprogram, s), scenario(stochasticprogram, s, 1))
+        generator(stochasticprogram, decision_key)(proxy(stochasticprogram, s), stage_parameters(stochasticprogram, s-1))
+        generator(stochasticprogram, stage_key)(proxy(stochasticprogram, s), stage_parameters(stochasticprogram, s), scenario(stochasticprogram, s, 1))
     end
     return nothing
 end
@@ -119,7 +120,7 @@ function clear!(stochasticprogram::StochasticProgram{N}) where N
         proxy_ = proxy(stochasticprogram, s)
         # Clear decisions
         if haskey(proxy_.ext, :decisions)
-            map(clear!, proxy_.ext[:decisions])
+            clear!(proxy_.ext[:decisions])
         end
         # Clear model
         empty!(proxy_)
@@ -155,7 +156,7 @@ function _outcome_model!(outcome_model::JuMP.Model,
                          decisions::AbstractVector,
                          scenario::AbstractScenario)
     # Prepare decisions
-    outcome_model.ext[:decisions] = (Decisions(), Decisions())
+    outcome_model.ext[:decisions] = Decisions(Val{2}(); is_node = true)
     add_decision_bridges!(outcome_model)
     # Generate the outcome model
     decision_generator(outcome_model, decision_params)
@@ -163,9 +164,10 @@ function _outcome_model!(outcome_model::JuMP.Model,
     # Copy first-stage objective
     copy_decision_objective!(stage_one_model,
                              outcome_model,
-                             all_known_decision_variables(outcome_model)[1])
+                             all_known_decision_variables(outcome_model, 1))
     # Update the known decision values
-    update_known_decisions!(outcome_model, decisions)
+    update_known_decisions!(outcome_model.ext[:decisions][1], decisions)
+    update_known_decisions!(outcome_model)
     return nothing
 end
 """

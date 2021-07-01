@@ -1,13 +1,12 @@
-using GLPK
-# Set the optimizer to GLPK
-set_optimizer(sp, GLPK.Optimizer)
-# Optimize (deterministic structure)
+# Instantiate with L-shaped optimizer
+sp = instantiate(simple, [ξ₁, ξ₂], optimizer = LShaped.Optimizer)
+# Print to compare structure of generated problem
+print(sp)
+# Set GLPK optimizer for the solving master problem and subproblems
+set_optimizer_attribute(sp, MasterOptimizer(), GLPK.Optimizer)
+set_optimizer_attribute(sp, SubProblemOptimizer(), GLPK.Optimizer)
+# Optimize (vertical structure)
 optimize!(sp)
-# Check termination status
-@show termination_status(sp)
-# Query optimal value
-@show objective_value(sp)
-# Calculate EVPI
-@show EVPI(sp)
-# Calculate VSS
-@show VSS(simple_model)
+# Check termination status and query optimal value
+@show termination_status(sp);
+@show objective_value(sp);

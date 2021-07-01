@@ -20,53 +20,77 @@ const gurobi = Gurobi.Optimizer
 const ssn_instance = instantiate(ssn, ssn_sampler, 1)
 const x₀ = rand(num_decisions(ssn_instance))
 
-function lshaped()
-    opt = LShaped.Optimizer()
-    MOI.set(opt, MasterOptimizer(), Gurobi.Optimizer)
-    MOI.set(opt, RawMasterOptimizerParameter("OutputFlag"), 0)
-    MOI.set(opt, RawMasterOptimizerParameter("Threads"), 4)
-    MOI.set(opt, RawMasterOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, RawSubproblemOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, SubproblemOptimizer(), () -> Gurobi.Optimizer(OutputFlag = 0))
-    MOI.set(opt, RelativeTolerance(), 1e-2)
-    MOI.set(opt, MOI.Silent(), true)
+const env = Gurobi.Env()
+const envs = map(procs()) do w
+    RemoteChannel(() -> Channel{Gurobi.Env}(1), w)
+end
+@sync begin
+    for (i,w) in enumerate(procs())
+        @async remotecall_fetch(
+                w,
+                envs[i]) do channel
+                    put!(channel, Gurobi.Env())
+                end
+    end
+end
+
+function clear_memory()
+    @everywhere GC.gc(true)
+    @everywhere ccall(:malloc_trim, Cvoid, (Cint,), 0)
+    sleep(1)
+    @everywhere GC.gc(true)
+    @everywhere ccall(:malloc_trim, Cvoid, (Cint,), 0)
+    sleep(1)
+    @everywhere GC.gc(true)
+    @everywhere ccall(:malloc_trim, Cvoid, (Cint,), 0)
+    sleep(1)
+    @everywhere GC.gc(true)
+    @everywhere ccall(:malloc_trim, Cvoid, (Cint,), 0)
+end
+
+function gurobi()
+    opt = Gurobi.Optimizer(env)
+    MOI.set(opt, MOI.RawParameter("OutputFlag"), 0)
+    MOI.set(opt, MOI.RawParameter("Threads"), 4)
+    MOI.set(opt, MOI.RawParameter("BarConvTol"), 1e-2)
     return opt
 end
 
-function tr_with_partial_aggregation()
+function lshaped()
     opt = LShaped.Optimizer()
-    MOI.set(opt, MasterOptimizer(), Gurobi.Optimizer)
+    MOI.set(opt, MasterOptimizer(), () -> Gurobi.Optimizer(fetch(envs[myid()])))
     MOI.set(opt, RawMasterOptimizerParameter("OutputFlag"), 0)
     MOI.set(opt, RawMasterOptimizerParameter("Threads"), 4)
     MOI.set(opt, RawMasterOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, RawSubproblemOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, SubproblemOptimizer(), () -> Gurobi.Optimizer(OutputFlag = 0))
+    MOI.set(opt, SubProblemOptimizer(), () -> Gurobi.Optimizer(fetch(envs[myid()])))
+    MOI.set(opt, RawSubProblemOptimizerParameter("OutputFlag"), 0)
+    MOI.set(opt, RawSubProblemOptimizerParameter("BarConvTol"), 1e-2)
     MOI.set(opt, RelativeTolerance(), 1e-2)
-    MOI.set(opt, Regularizer(), TR())
-    MOI.set(opt, Aggregator(), PartialAggregate(36))
     MOI.set(opt, MOI.Silent(), true)
     return opt
 end
 
 function lv_with_kmedoids_aggregation()
     opt = LShaped.Optimizer()
-    MOI.set(opt, MasterOptimizer(), Gurobi.Optimizer)
+    MOI.set(opt, MasterOptimizer(), () -> Gurobi.Optimizer(fetch(envs[myid()])))
     MOI.set(opt, RawMasterOptimizerParameter("OutputFlag"), 0)
     MOI.set(opt, RawMasterOptimizerParameter("Threads"), 4)
     MOI.set(opt, RawMasterOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, RawSubproblemOptimizerParameter("BarConvTol"), 1e-2)
-    MOI.set(opt, SubproblemOptimizer(), () -> Gurobi.Optimizer(OutputFlag = 0))
+    MOI.set(opt, SubProblemOptimizer(), () -> Gurobi.Optimizer(fetch(envs[myid()])))
+    MOI.set(opt, RawSubProblemOptimizerParameter("OutputFlag"), 0)
+    MOI.set(opt, RawSubProblemOptimizerParameter("BarConvTol"), 1e-2)
     MOI.set(opt, RelativeTolerance(), 1e-2)
-    MOI.set(opt, Regularizer(), LV())
-    MOI.set(opt, Aggregator(), ClusterAggregate(Kmedoids(20, distance = angular_distance), lock_after = (τ,n) -> n > 5))
+    MOI.set(opt, Regularizer(), LV(λ = 0.8))
+    MOI.set(opt, Aggregator(), GranulatedAggregate(round(Int,0.035*6000/nworkers()), ClusterAggregate(Kmedoids(17, distance = angular_distance))))
     MOI.set(opt, MOI.Silent(), true)
     return opt
 end
 
 function adaptive_progressive_hedging()
     opt = ProgressiveHedging.Optimizer()
-    MOI.set(opt, SubproblemOptimizer(), () -> Gurobi.Optimizer(OutputFlag = 0))
-    MOI.set(opt, RawSubproblemOptimizerParameter("BarConvTol"), 1e-2)
+    MOI.set(opt, SubProblemOptimizer(), () -> Gurobi.Optimizer(fetch(envs[myid()])))
+    MOI.set(opt, RawSubProblemOptimizerParameter("OutputFlag"), 0)
+    MOI.set(opt, RawSubProblemOptimizerParameter("BarConvTol"), 1e-2)
     MOI.set(opt, Penalizer(), Adaptive())
     MOI.set(opt, PrimalTolerance(), 1e-3)
     MOI.set(opt, DualTolerance(), 1e-2)
@@ -101,7 +125,8 @@ function prepare(model::StochasticModel,
                                           setup = (sp = instantiate($model,
                                                                     $sampler,
                                                                     $num_scenarios;
-                                                                    optimizer = $optimizer)))
+                                                                    optimizer = $optimizer)),
+                                          teardown = (clear_memory()))
     end
     return benchmarks
 end

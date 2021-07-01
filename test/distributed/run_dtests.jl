@@ -3,7 +3,6 @@ using Distributed
 include(joinpath(Sys.BINDIR, "..", "share", "julia", "test", "testenv.jl"))
 addprocs_with_testenv(3)
 @test nworkers() == 3
-
 @everywhere using Logging
 for w in workers()
     # Do not log on worker nodes
@@ -14,6 +13,7 @@ end
 @everywhere using JuMP
 @everywhere using LinearAlgebra
 @everywhere using GLPK
+@everywhere using Ipopt
 
 @everywhere using Distributions
 

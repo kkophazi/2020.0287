@@ -8,12 +8,12 @@
         @test_throws UnloadableStructure optimize!(sp)
         set_silent(sp)
         set_optimizer_attribute(sp, MasterOptimizer(), GLPK.Optimizer)
-        set_optimizer_attribute(sp, SubproblemOptimizer(), GLPK.Optimizer)
+        set_optimizer_attribute(sp, SubProblemOptimizer(), GLPK.Optimizer)
         if name == "Infeasible" || name == "Vectorized Infeasible"
-            set_optimizer_attribute(sp, FeasibilityCuts(), true)
+            set_optimizer_attribute(sp, FeasibilityStrategy(), FeasibilityCuts())
         end
         @testset "Distributed SP Constructs: $name" begin
-            optimize!(sp)
+            optimize!(sp, cache = true)
             @test termination_status(sp) == MOI.OPTIMAL
             @test isapprox(optimal_decision(sp), res.x̄, rtol = tol)
             for i in 1:num_scenarios(sp)
@@ -27,15 +27,15 @@
             @test isapprox(EEV(sp), res.EEV, rtol = tol)
         end
         @testset "Distributed Sanity Check: $name" begin
-            sp_nondist = copy(sp, instantiation = Vertical())
+            sp_nondist = copy(sp, instantiation = StageDecomposition())
             add_scenarios!(sp_nondist, scenarios(sp))
             set_optimizer(sp_nondist, LShaped.Optimizer)
             set_silent(sp_nondist)
             set_optimizer_attribute(sp_nondist, Execution(), Serial())
             set_optimizer_attribute(sp_nondist, MasterOptimizer(), GLPK.Optimizer)
-            set_optimizer_attribute(sp_nondist, SubproblemOptimizer(), GLPK.Optimizer)
+            set_optimizer_attribute(sp_nondist, SubProblemOptimizer(), GLPK.Optimizer)
             if name == "Infeasible" || name == "Vectorized Infeasible"
-                set_optimizer_attribute(sp_nondist, FeasibilityCuts(), true)
+                set_optimizer_attribute(sp_nondist, FeasibilityStrategy(), FeasibilityCuts())
             end
             optimize!(sp_nondist)
             @test termination_status(sp_nondist) == MOI.OPTIMAL
@@ -65,10 +65,10 @@
             @test num_scenarios(sp_copy) == num_scenarios(sp)
             generate!(sp_copy)
             @test num_subproblems(sp_copy) == num_subproblems(sp)
-            set_optimizer_attribute(sp_copy, MasterOptimizer(), () -> GLPK.Optimizer(presolve = true))
-            set_optimizer_attribute(sp_copy, SubproblemOptimizer(), () -> GLPK.Optimizer(presolve = true))
+            set_optimizer_attribute(sp_copy, MasterOptimizer(), () -> GLPK.Optimizer())
+            set_optimizer_attribute(sp_copy, SubProblemOptimizer(), () -> GLPK.Optimizer())
             if name == "Infeasible" || name == "Vectorized Infeasible"
-                set_optimizer_attribute(sp_copy, FeasibilityCuts(), true)
+                set_optimizer_attribute(sp_copy, FeasibilityStrategy(), FeasibilityCuts())
             end
             optimize!(sp)
             optimize!(sp_copy)

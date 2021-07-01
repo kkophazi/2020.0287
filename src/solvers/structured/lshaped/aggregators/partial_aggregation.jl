@@ -47,7 +47,7 @@ function passthrough!(lshaped::AbstractLShaped, aggregation::PartialAggregation,
     return false
 end
 
-function aggregate_cut!(cutqueue::CutQueue, aggregation::PartialAggregation, ::MetaData, t::Integer, cut::HyperPlane, x::AbstractArray)
+function aggregate_cut!(cutqueue::CutQueue, aggregation::PartialAggregation, ::MetaDataChannel, t::Integer, cut::HyperPlane, x::AbstractArray)
     passthrough!(cutqueue, aggregation, cut, t, x)
     add_to_collection!(aggregation.collection, cut, x)
     if considered(aggregation.collection) == aggregation.size
@@ -96,7 +96,7 @@ function flush!(lshaped::AbstractLShaped, aggregation::PartialAggregation)
     return added
 end
 
-function flush!(cutqueue::CutQueue, aggregation::PartialAggregation, ::MetaData, t::Integer, x::AbstractArray)
+function flush!(cutqueue::CutQueue, aggregation::PartialAggregation, ::MetaDataChannel, t::Integer, x::AbstractArray)
     if collection_size(aggregation.collection) > 0 && collection_size(aggregation.collection) == considered(aggregation.collection)
         aggregated_cut = aggregate(aggregation.collection)
         put!(cutqueue, (t, aggregated_cut))
@@ -110,7 +110,7 @@ end
 """
     PartialAggregate
 
-Factory object for [`PartialAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or by setting the [`Aggregator`](@ref) attribute.  See ?PartialAggregation for parameter descriptions.
+Factory object for [`PartialAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or set the [`Aggregator`](@ref) attribute.  See ?PartialAggregation for parameter descriptions.
 
 """
 mutable struct PartialAggregate <: AbstractAggregator
@@ -158,7 +158,7 @@ end
 """
     Aggregate
 
-Factory object for [`FullAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or by setting the [`Aggregator`](@ref) attribute.
+Factory object for [`FullAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or by set the [`Aggregator`](@ref) attribute.
 
 """
 struct Aggregate <: AbstractAggregator end

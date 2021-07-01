@@ -10,10 +10,10 @@ tolerance(lshaped::AbstractLShaped) = lshaped.parameters.τ
 function initialize!(lshaped::AbstractLShaped)
     # Initialize progress meter
     lshaped.progress.thresh = lshaped.parameters.τ
-    # Initialize subproblems
-    initialize_subproblems!(lshaped, scenarioproblems(lshaped.structure, 2))
     # Prepare the master optimization problem
     prepare_master!(lshaped)
+    # Initialize integer algorithm
+    initialize_integer_algorithm!(lshaped)
     # Initialize regularization policy
     initialize_regularization!(lshaped)
     # Finish initialization
@@ -120,7 +120,7 @@ end
 function update_solution!(lshaped::AbstractLShaped)
     ncols = num_decisions(lshaped.structure)
     nb = num_thetas(lshaped)
-    lshaped.x .= MOI.get.(lshaped.master, MOI.VariablePrimal(), lshaped.decisions.undecided)
+    lshaped.x .= MOI.get.(lshaped.master, MOI.VariablePrimal(), all_decisions(lshaped.decisions))
     θs = map(lshaped.master_variables) do vi
         if vi.value == 0
             -1e10
@@ -133,7 +133,7 @@ function update_solution!(lshaped::AbstractLShaped)
 end
 
 function decision(lshaped::AbstractLShaped, index::MOI.VariableIndex)
-    i = something(findfirst(i -> i == index, lshaped.decisions.undecided), 0)
+    i = something(findfirst(i -> i == index, all_decisions(lshaped.decisions)), 0)
     if iszero(i)
         throw(MOI.InvalidIndex(index))
     end
@@ -145,8 +145,9 @@ function evaluate_first_stage(lshaped::AbstractLShaped, x::AbstractVector)
     # Get objective
     @unpack master_objective = lshaped.data
     # Evaluate objective
+    decisions = all_decisions(lshaped.decisions)
     obj_val = MOIU.eval_variables(master_objective) do vi
-        if vi in lshaped.decisions.undecided
+        if vi in decisions
             # Only evaluate decision
             x[vi.value]
         else
@@ -187,7 +188,7 @@ function log!(lshaped::AbstractLShaped; optimal = false, status = nothing)
         elseif status == MOI.DUAL_INFEASIBLE
             -Inf
         else
-            0.0
+            Q
         end
         ProgressMeter.update!(lshaped.progress, val,
                               showvalues = [
@@ -259,10 +260,12 @@ function indentstr(n::Integer)
     return repeat(" ", n)
 end
 
-function check_optimality(lshaped::AbstractLShaped)
+function check_optimality(lshaped::AbstractLShaped, added::Bool)
     @unpack τ = lshaped.parameters
     @unpack θ = lshaped.data
-    return θ > -Inf && gap(lshaped) <= τ
+    cut_condition = !added && norm(decision(lshaped) - lshaped.x) <= sqrt(eps())
+    gap_condition = θ > -Inf && gap(lshaped) <= τ
+    return (cut_condition || gap_condition) && check_optimality(lshaped, lshaped.integer)
 end
 # ======================================================================== #
 
@@ -339,8 +342,12 @@ function add_cut!(lshaped::AbstractLShaped, cut::AggregatedOptimalityCut, θs::A
     end
     return true
 end
-add_cut!(lshaped::AbstractLShaped, cut::AnyOptimalityCut, θs::AbstractVector, subobjectives::AbstractVector, x::AbstractVector; check = true) = add_cut!(lshaped, cut, θs, subobjectives, cut(x); check = check)
-add_cut!(lshaped::AbstractLShaped, cut::AnyOptimalityCut, θs::AbstractVector, subobjectives::AbstractVector; check = true) = add_cut!(lshaped, cut, θs, subobjectives, current_decision(lshaped); check = check)
+function add_cut!(lshaped::AbstractLShaped, cut::AnyOptimalityCut, θs::AbstractVector, subobjectives::AbstractVector, x::AbstractVector; check = true)
+    return add_cut!(lshaped, cut, θs, subobjectives, cut(x); check = check)
+end
+function add_cut!(lshaped::AbstractLShaped, cut::AnyOptimalityCut, θs::AbstractVector, subobjectives::AbstractVector; check = true)
+    return add_cut!(lshaped, cut, θs, subobjectives, current_decision(lshaped); check = check)
+end
 
 function add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{FeasibilityCut}, ::AbstractVector, subobjectives::AbstractVector, Q::AbstractFloat; check = true)
     # Ensure that there is no false convergence
@@ -355,14 +362,21 @@ function add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{FeasibilityCut}, ::A
     end
     return true
 end
-add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{FeasibilityCut}, θs::AbstractVector, subobjectives::AbstractVector; check = true) = add_cut!(lshaped, cut, θs, subobjectives, Inf)
+function add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{FeasibilityCut}, θs::AbstractVector, subobjectives::AbstractVector; check = true)
+    correction = if has_metadata(lshaped.execution.metadata, cut.id, :correction)
+        correction = get_metadata(lshaped.execution.metadata, cut.id, :correction)
+    else
+        correction = 1.
+    end
+    return add_cut!(lshaped, cut, θs, subobjectives, correction * Inf)
+end
 
 function add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{Infeasible}, ::AbstractVector, subobjectives::AbstractVector; check = true)
-    subobjectives[cut.id] = Inf
+    subobjectives[cut.id] = cut.q
     return true
 end
 
 function add_cut!(lshaped::AbstractLShaped, cut::HyperPlane{Unbounded}, ::AbstractVector, subobjectives::AbstractVector; check = true)
-    subobjectives[cut.id] = -Inf
+    subobjectives[cut.id] = cut.q
     return true
 end

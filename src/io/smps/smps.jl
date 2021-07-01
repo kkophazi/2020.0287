@@ -8,6 +8,7 @@ using Distributed
 
 # External libraries
 using StochasticPrograms
+using StochasticPrograms: canonical
 using Compat
 using Distributions
 using Distributions: AliasTable
@@ -34,6 +35,10 @@ const GEQ = :GEQ
 const RANGE = :RANGE
 const LOWER = :LOWER
 const UPPER = :UPPER
+const BINARY = :BINARY
+const INTEGER = :INTEGER
+const INTEGER_LOWER = :INTEGER_LOWER
+const INTEGER_UPPER = :INTEGER_UPPER
 const FREE = :FREE
 const FIXED = :FIXED
 
@@ -55,7 +60,8 @@ const COR_MODES = [NAME, ROWS, COLUMNS, RHS, RANGES, BOUNDS, END]
 # STO file constants
 const INDEP = :INDEP
 const BLOCKS = :BLOCKS
-const STO_MODES = [INDEP, BLOCKS, END]
+const SCENARIOS = :SCENARIOS
+const STO_MODES = [INDEP, BLOCKS, SCENARIOS, END]
 
 const REPLACE = :REPLACE
 const ADD = :ADD

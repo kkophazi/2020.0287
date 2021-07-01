@@ -77,7 +77,9 @@ function ssn_model(data::SSNData)
             @variable(model, s[i = nodes] >= 0)
             @objective(model, Min, sum(s[i] for i in nodes))
             @constraint(model, capacity[j = links],
-                sum(sum(incidence[j,r]*f[r] for r in routes_in[i]) for i in nodes) <= x[j] + capacity[j])
+                sum(sum(incidence[j,r]*f[r]
+                    for r in routes_in[i])
+                        for i in nodes) <= x[j] + capacity[j])
             @constraint(model, unserved[i = nodes],
                 sum(f[r] for r in routes_in[i]) + s[i] == ω[i])
         end

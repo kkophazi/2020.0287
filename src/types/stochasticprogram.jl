@@ -1,8 +1,7 @@
 struct StochasticProgram{N, S <: NTuple{N, Stage}, ST <: AbstractStochasticStructure{N}}
     stages::S
-    decisions::NTuple{N, Decisions}
+    decisions::Decisions{N}
     structure::ST
-    proxy::NTuple{N,JuMP.Model}
     generator::Dict{Symbol, Function}
     problemcache::Dict{Symbol, JuMP.Model}
     solutioncache::Dict{Symbol, SolutionCache}
@@ -15,19 +14,13 @@ struct StochasticProgram{N, S <: NTuple{N, Stage}, ST <: AbstractStochasticStruc
         N >= 2 || error("Stochastic program needs at least two stages.")
         M == N - 1 || error("Inconsistent number of stages $N and number of scenario types $M")
         S = typeof(stages)
-        decisions = ntuple(Val(N)) do i
-            Decisions()
-        end
+        decisions = Decisions(Val(N))
         optimizer = StochasticProgramOptimizer(optimizer_constructor)
         structure = StochasticStructure(decisions, scenario_types, default_structure(instantiation, optimizer.optimizer))
         ST = typeof(structure)
-        proxy = ntuple(Val{N}()) do _
-            Model()
-        end
         return new{N, S, ST}(stages,
                              decisions,
                              structure,
-                             proxy,
                              Dict{Symbol, Function}(),
                              Dict{Symbol, JuMP.Model}(),
                              Dict{Symbol, SolutionCache}(),
@@ -41,19 +34,13 @@ struct StochasticProgram{N, S <: NTuple{N, Stage}, ST <: AbstractStochasticStruc
         N >= 2 || error("Stochastic program needs at least two stages.")
         M == N - 1 || error("Inconsistent number of stages $N and number of scenario types $M")
         S = typeof(stages)
-        decisions = ntuple(Val(N)) do i
-            Decisions()
-        end
+        decisions = Decisions(Val(N))
         optimizer = StochasticProgramOptimizer(optimizer_constructor)
         structure = StochasticStructure(decisions, scenarios, default_structure(instantiation, optimizer.optimizer))
         ST = typeof(structure)
-        proxy = ntuple(Val{N}()) do _
-            Model()
-        end
         return new{N, S, ST}(stages,
                              decisions,
                              structure,
-                             proxy,
                              Dict{Symbol, Function}(),
                              Dict{Symbol, JuMP.Model}(),
                              Dict{Symbol, SolutionCache}(),

@@ -161,9 +161,9 @@ function instantiate(stochasticmodel::StochasticModel{2},
     return sp
 end
 """
-    optimize!(stochasticprogram::StochasticProgram; crash::AbstractCrash = Crash.None(); kw...)
+    optimize!(stochasticprogram::StochasticProgram; crash::AbstractCrash = Crash.None(), cache::Bool = false; kw...)
 
-Optimize the `stochasticprogram` in expectation. If an optimizer has not been set yet (see [`set_optimizer`](@ref)), a `NoOptimizer` error is thrown. An optional crash procedure can be set to warm-start.
+Optimize the `stochasticprogram` in expectation. If an optimizer has not been set yet (see [`set_optimizer`](@ref)), a `NoOptimizer` error is thrown. An optional crash procedure can be set to warm-start. Setting the `cache` flag to true will, upon sucessful termination, try to cache the solution values for all relevant attributes in the model. The values will then persist after future `evaluate` calls that would otherwise overwrite the optimal solution.
 
 ## Examples
 
@@ -172,7 +172,7 @@ The following solves the stochastic program `sp` using the L-shaped algorithm.
 ```julia
 set_optimizer(sp, LShaped.Optimizer)
 set_optimizer_attribute(sp, MasterOptimizer(), GLPK.Optimizer)
-set_optimizer_attribute(sp, SubproblemOptimizer(), GLPK.Optimizer)
+set_optimizer_attribute(sp, SubProblemOptimizer(), GLPK.Optimizer)
 optimize!(sp);
 
 # output
@@ -196,7 +196,7 @@ optimize!(sp)
 
 See also: [`VRP`](@ref)
 """
-function JuMP.optimize!(stochasticprogram::TwoStageStochasticProgram; crash::AbstractCrash = Crash.None(), kw...)
+function JuMP.optimize!(stochasticprogram::TwoStageStochasticProgram; crash::AbstractCrash = Crash.None(), cache::Bool = false, kw...)
     # Throw NoOptimizer error if no recognized optimizer has been provided
     check_provided_optimizer(stochasticprogram.optimizer)
     # Ensure stochastic program has been initialized at this point
@@ -207,7 +207,25 @@ function JuMP.optimize!(stochasticprogram::TwoStageStochasticProgram; crash::Abs
     x₀ = crash(stochasticprogram)
     # Switch on structure and solver type
     optimize!(structure(stochasticprogram), optimizer(stochasticprogram), x₀; kw...)
-    # Cache solution
+    # Cache solution (if requested)
+    if cache
+        cache_solution!(stochasticprogram, structure(stochasticprogram), optimizer(stochasticprogram))
+    end
+    return nothing
+end
+"""
+    cache_solution!(stochasticprogram::StochasticProgram)
+
+Cache the optimal solution, including as many model/variable/constraints attributes as possible, after a call to [`optimize!`](@ref)
+"""
+function cache_solution!(stochasticprogram::StochasticProgram)
+    # Throw NoOptimizer error if no recognized optimizer has been provided
+    check_provided_optimizer(stochasticprogram.optimizer)
+    # Throw if optimize! has not been called
+    if MOI.get(stochasticprogram, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
+        throw(OptimizeNotCalled())
+    end
+    # Defer to structure
     cache_solution!(stochasticprogram, structure(stochasticprogram), optimizer(stochasticprogram))
     return nothing
 end
@@ -431,7 +449,7 @@ end
 """
     objective_value(stochasticmodel::StochasticModel; result::Int = 1)
 
-Returns the value of the recourse problem after a call to `optimize!(stochasticmodel)`.
+Returns a confidence interval around the value of the recourse problem after a call to `optimize!(stochasticmodel)`.
 """
 function JuMP.objective_value(stochasticmodel::StochasticModel; result::Int = 1)
     # Throw NoOptimizer error if no recognized optimizer has been provided
@@ -499,8 +517,12 @@ ordered by creation time.
 """
 function all_decision_variables(stochasticprogram::StochasticProgram{N}, stage::Integer) where N
     1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
-    decisions::NTuple{stage,Decisions} = stochasticprogram.proxy[stage].ext[:decisions]
-    return map(decisions[stage].undecided) do index
+    decisions = if stage == 1
+        all_decisions(stochasticprogram.decisions, 1)
+    else
+        all_decisions(proxy(stochasticprogram, stage).ext[:decisions], stage)
+    end
+    return map(decisions) do index
         DecisionVariable(stochasticprogram, stage, index)
     end
 end
@@ -518,8 +540,7 @@ end
 Return the proxy model of the `stochasticprogram` at `stage`.
 """
 function proxy(stochasticprogram::StochasticProgram{N}, stage::Integer) where N
-    1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
-    return stochasticprogram.proxy[stage]
+    return proxy(structure(stochasticprogram), stage)
 end
 """
     Base.getindex(stochasticprogram::StochasticProgram, stage::Integer, name::Symbol)
@@ -538,13 +559,11 @@ function Base.getindex(stochasticprogram::StochasticProgram, stage::Integer, nam
             return map(obj) do dvar
                 return DecisionVariable(stochasticprogram, stage, index(dvar))
             end
-        elseif obj isa KnownRef || obj isa AbstractArray{<:KnownRef}
-            error("$obj is known in stage $stage. Query an earlier stage for the original decision.")
         elseif obj isa ConstraintRef{Model, <:CI{<:DecisionLike}}
-            return SPConstraintRef(stochasticprogram, stage, index(obj), obj.shape)
+            return SPConstraintRef(stochasticprogram, stage, obj)
         elseif obj isa AbstractArray{<:ConstraintRef{Model, <:CI{<:DecisionLike}}}
             return map(obj) do cref
-                return SPConstraintRef(stochasticprogram, stage, index(cref), cref.shape)
+                return SPConstraintRef(stochasticprogram, stage, cref)
             end
         else
             error("Only decisions and decision constraints can be queried using this syntax. For regular variables and constraints, either annotate the relevant variable with @decision or first query the relevant JuMP subproblem and use the regular `[]` syntax.")
@@ -637,6 +656,8 @@ Return the exected scenario of all scenarios of the `stochasticprogram` at `stag
 function expected(stochasticprogram::StochasticProgram{N}, stage::Integer = 2) where N
     1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
     stage == 1 && error("The first stage does not have scenarios.")
+    p = stage_probability(stochasticprogram, stage)
+    abs(p - 1.0) <= 1e-6 || @warn "Scenario probabilities do not add up to one. The probability sum is given by $p"
     return expected(structure(stochasticprogram), stage)
 end
 """
@@ -710,7 +731,7 @@ Return the subproblem at `scenario_index` of the `stochasticprogram` at `stage`.
 """
 function subproblem(stochasticprogram::StochasticProgram{N}, stage::Integer, scenario_index::Integer) where N
     1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
-    stage == 1 || error("The first-stage does not have subproblems.")
+    stage == 1 && error("The first-stage does not have subproblems.")
     return subproblem(structure(stochasticprogram), stage, scenario_index)
 end
 """
@@ -728,7 +749,7 @@ Return an array of all subproblems of the `stochasticprogram` at `stage`. Defaul
 """
 function subproblems(stochasticprogram::StochasticProgram{N}, stage::Integer = 2) where N
     1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
-    stage == 1 || error("The first-stage does not have subproblems.")
+    stage == 1 && error("The first-stage does not have subproblems.")
     return subproblems(structure(stochasticprogram), stage)
 end
 """
@@ -845,7 +866,7 @@ Return the value associated with the solver-specific attribute named `name` in `
 
 See also: [`set_optimizer_attribute`](@ref), [`set_optimizer_attributes`](@ref).
 """
-function get_optimizer_attribute(stochasticprogram::StochasticProgram, name::String)
+function JuMP.get_optimizer_attribute(stochasticprogram::StochasticProgram, name::String)
     return get_optimizer_attribute(stochasticprogram, MOI.RawParameter(name))
 end
 """
@@ -855,7 +876,7 @@ Return the value of the solver-specific attribute `attr` in `stochasticprogram`.
 
 See also: [`set_optimizer_attribute`](@ref), [`set_optimizer_attributes`](@ref).
 """
-function get_optimizer_attribute(stochasticprogram::StochasticProgram, attr::MOI.AbstractOptimizerAttribute)
+function JuMP.get_optimizer_attribute(stochasticprogram::StochasticProgram, attr::MOI.AbstractOptimizerAttribute)
     return MOI.get(stochasticprogram, attr)
 end
 # ========================== #
@@ -863,28 +884,20 @@ end
 # Setters
 # ========================== #
 """
-    update_decisions!(stochasticmodel::Stochasticprogram, change::DecisionModification)
+    update_known_decisions!(stochasticprogram::Stochasticprogram)
 
-Apply the decision modification `change` to the first-stage of `stochasticprogram`.
+Update all known decision values in the first-stage of `stochasticprogram`.
 """
-function update_decisions!(stochasticprogram::StochasticProgram, change::DecisionModification)
-    update_decisions!(structure(stochasticprogram), change)
+function update_known_decisions!(stochasticprogram::StochasticProgram)
+    update_known_decisions!(structure(stochasticprogram))
 end
 """
-    update_decisions!(stochasticmodel::Stochasticprogram, change::DecisionModification, stage::Integer, scenario_index::Integer)
+    update_decisions!(stochasticprogram::Stochasticprogram, stage::Integer, scenario_index::Integer)
 
-Apply the decision modification `change` to the node at stage `stage` and scenario `scenario_index` of `stochasticprogram`.
+Update all known decision values in the node at stage `stage` and scenario `scenario_index` of `stochasticprogram`.
 """
-function update_decisions!(stochasticprogram::StochasticProgram, change::DecisionModification, stage::Integer, scenario_index::Integer)
-    update_decisions!(structure(stochasticprogram), change, stage, scenario_index)
-end
-"""
-    update_decisions!(stochasticmodel::TwoStageStochasticprogram, change::DecisionModification, scenario_index::Integer)
-
-Apply the decision modification `change` in scenario `scenario_index` of the two-stage `stochasticprogram`.
-"""
-function update_decisions!(stochasticprogram::TwoStageStochasticProgram, change::DecisionModification, scenario_index::Integer)
-    update_decisions!(structure(stochasticprogram), change, scenario_index)
+function update_decisions!(stochasticprogram::StochasticProgram, stage::Integer, scenario_index::Integer)
+    update_known_decisions!(structure(stochasticprogram), stage, scenario_index)
 end
 """
     set_optimizer(stochasticmodel::StochasticModel, optimizer)

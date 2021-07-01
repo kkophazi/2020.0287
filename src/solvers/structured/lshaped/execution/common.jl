@@ -89,7 +89,7 @@ function iterate!(lshaped::AbstractLShaped, ::AbstractLShapedExecution)
     # Resolve all subproblems at the current optimal solution
     Q, added = resolve_subproblems!(lshaped)
     if Q == Inf && !handle_feasibility(lshaped.feasibility)
-        @warn "Stochastic program is not second-stage feasible at the current decision. Rerun procedure with feasibility_cuts = true to use feasibility cuts."
+        @warn "Stochastic program is not second-stage feasible at the current decision. Rerun procedure with feasibility_strategy = FeasibilityCuts to use feasibility cuts."
         # Early termination log
         log!(lshaped; status = MOI.INFEASIBLE)
         return MOI.INFEASIBLE
@@ -102,8 +102,8 @@ function iterate!(lshaped::AbstractLShaped, ::AbstractLShapedExecution)
     lshaped.data.Q = Q
     # Update incumbent (if applicable)
     take_step!(lshaped)
-    # Early optimality check if using level sets
-    if lshaped.regularization isa LevelSet && check_optimality(lshaped)
+    # Early gap optimality check if using level sets
+    if lshaped.regularization isa LevelSet && check_optimality(lshaped, true)
         # Resolve subproblems with optimal vector
         lshaped.x .= decision(lshaped)
         resolve_subproblems!(lshaped)
@@ -121,13 +121,21 @@ function iterate!(lshaped::AbstractLShaped, ::AbstractLShapedExecution)
     # Update master solution
     update_solution!(lshaped)
     lshaped.data.θ = calculate_estimate(lshaped)
+    # Handle integrality
+    handle_integrality!(lshaped, lshaped.integer)
     # Log progress
     log!(lshaped)
     # Check optimality
-    if check_optimality(lshaped) || (!added && norm(decision(lshaped) - lshaped.x) <= sqrt(eps()))
+    if check_optimality(lshaped, added)
         # Optimal, final log
         log!(lshaped; optimal = true)
         return MOI.OPTIMAL
+    end
+    # Calculate time spent so far and check perform time limit check
+    time_spent = lshaped.progress.tlast - lshaped.progress.tinit
+    if time_spent >= lshaped.parameters.time_limit
+        log!(lshaped; status = MOI.TIME_LIMIT)
+        return MOI.TIME_LIMIT
     end
     # Consolidate (if applicable)
     consolidate!(lshaped, lshaped.consolidation)

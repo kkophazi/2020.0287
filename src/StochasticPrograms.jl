@@ -12,7 +12,7 @@ using JuMP
 using Compat
 using OrderedCollections
 using MathOptInterface
-using Distributions
+import Distributions: mean, std, quantile, ProbabilityWeights, TDist, Normal
 using MacroTools
 using MacroTools: @q, postwalk, prewalk
 using Reexport
@@ -56,9 +56,9 @@ export
     MasterOptimizer,
     MasterOptimizerAttribute,
     RawMasterOptimizerParameter,
-    SubproblemOptimizer,
-    SubproblemOptimizerAttribute,
-    RawSubproblemOptimizerParameter,
+    SubProblemOptimizer,
+    SubProblemOptimizerAttribute,
+    RawSubProblemOptimizerParameter,
     InstanceOptimizer,
     InstanceOptimizerAttribute,
     RawInstanceOptimizerParameter,
@@ -88,16 +88,21 @@ export
     optimizer_name,
     optimizer,
     optimizer_constructor,
+    cache_solution!,
     AbstractStochasticStructure,
     StochasticInstantiation,
     UnspecifiedInstantiation,
     Deterministic,
     DeterministicEquivalent,
+    StageDecomposition,
     Vertical,
-    VerticalStructure,
+    StageDecompositionStructure,
+    ScenarioDecomposition,
     Horizontal,
-    HorizontalStructure,
+    ScenarioDecompositionStructure,
+    DistributedStageDecomposition,
     DistributedVertical,
+    DistributedScenarioDecomposition,
     DistributedHorizontal,
     SampleAverageApproximation,
     Crash,
@@ -113,8 +118,6 @@ export
     Decisions,
     SingleDecision,
     VectorOfDecisions,
-    SingleKnown,
-    VectorOfKnowns,
     AffineDecisionFunction,
     QuadraticDecisionFunction,
     VectorAffineDecisionFunction,
@@ -124,13 +127,8 @@ export
     ScenarioDependentVariableAttribute,
     ScenarioDependentConstraintAttribute,
     DecisionRef,
-    KnownRef,
     DecisionAffExpr,
     DecisionQuadExpr,
-    SingleDecision,
-    VectorOfDecisions,
-    AffineDecisionFunction,
-    VectorAffineDecisionFunction,
     decision,
     state,
     decisions,
@@ -138,6 +136,7 @@ export
     decision_names,
     all_decision_variables,
     all_known_decision_variables,
+    all_auxiliary_variables,
     decision_by_name,
     recourse_length,
     first_stage,
@@ -189,6 +188,8 @@ export
     set_instanceoptimizer_attribute,
     set_instanceoptimizer_attributes,
     optimize!,
+    num_iterations,
+    structure,
     default_structure,
     supports_structure,
     check_loadable,
@@ -234,6 +235,7 @@ end
 
 include("types/types.jl")
 include("methods/methods.jl")
+include("macros/macros.jl")
 include("optimizer_interface.jl")
 include("crash.jl")
 include("solvers/solvers.jl")

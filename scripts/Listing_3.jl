@@ -1,7 +1,13 @@
-# Create two scenarios
-ξ₁ = Scenario(q₁ = 24.0, q₂ = 28.0, d₁ = 500.0, d₂ = 100.0, probability = 0.4)
-ξ₂ = Scenario(q₁ = 28.0, q₂ = 32.0, d₁ = 300.0, d₂ = 300.0, probability = 0.6)
-# Instantiate without optimizer
-sp = instantiate(simple_model, [ξ₁, ξ₂])
-# Print to show structure of generated problem
-print(sp)
+using GLPK
+# Set the optimizer to GLPK
+set_optimizer(sp, GLPK.Optimizer)
+# Optimize (deterministic structure)
+optimize!(sp)
+# Check termination status
+@show termination_status(sp)
+# Query optimal value
+@show objective_value(sp)
+# Calculate EVPI
+@show EVPI(sp)
+# Calculate VSS
+@show VSS(sp)

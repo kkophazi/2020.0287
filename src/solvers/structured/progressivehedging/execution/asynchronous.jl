@@ -6,7 +6,7 @@ Functor object for using asynchronous execution in a progressive-hedging algorit
 """
 struct AsynchronousExecution{T <: AbstractFloat,
                              A <: AbstractVector,
-                             PT <: AbstractPenaltyterm} <: AbstractProgressiveHedgingExecution
+                             PT <: AbstractPenaltyTerm} <: AbstractProgressiveHedgingExecution
     subworkers::Vector{SubWorker{T,A,PT}}
     work::Vector{Work}
     finalize::Vector{Work}
@@ -25,7 +25,7 @@ struct AsynchronousExecution{T <: AbstractFloat,
     function AsynchronousExecution(κ::T,
                                    ::Type{T}, ::Type{A}, ::Type{PT}) where {T <: AbstractFloat,
                                                                             A <: AbstractVector,
-                                                                            PT <: AbstractPenaltyterm}
+                                                                            PT <: AbstractPenaltyTerm}
         return new{T,A,PT}(Vector{SubWorker{T,A,PT}}(undef, nworkers()),
                            Vector{Work}(undef, nworkers()),
                            Vector{Work}(undef, nworkers()),
@@ -44,7 +44,7 @@ end
 function initialize_subproblems!(ph::AbstractProgressiveHedging,
                                  execution::AsynchronousExecution{T,A},
                                  scenarioproblems::DistributedScenarioProblems,
-                                 penaltyterm::AbstractPenaltyterm) where {T <: AbstractFloat, A <: AbstractVector}
+                                 penaltyterm::AbstractPenaltyTerm) where {T <: AbstractFloat, A <: AbstractVector}
     # Create subproblems on worker processes
     initialize_subproblems!(ph,
                             execution.subworkers,
@@ -147,6 +147,12 @@ function iterate!(ph::AbstractProgressiveHedging, execution::AsynchronousExecuti
             # Optimal, final log
             log!(ph, optimal = true)
             return MOI.OPTIMAL
+        end
+        # Calculate time spent so far and check perform time limit check
+        time_spent = ph.progress.tlast - ph.progress.tinit
+        if time_spent >= ph.parameters.time_limit
+            log!(ph; status = MOI.TIME_LIMIT)
+            return MOI.TIME_LIMIT
         end
         # Update penalty (if applicable)
         update_penalty!(ph)
@@ -258,7 +264,7 @@ end
 # ------------------------------------------------------------
 function (execution::Asynchronous)(::Type{T}, ::Type{A}, ::Type{PT}) where {T <: AbstractFloat,
                                                                             A <: AbstractVector,
-                                                                            PT <: AbstractPenaltyterm}
+                                                                            PT <: AbstractPenaltyTerm}
     return AsynchronousExecution(execution.κ, T, A, PT)
 end
 

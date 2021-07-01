@@ -42,7 +42,7 @@ function passthrough!(lshaped::AbstractLShaped, aggregation::GranulatedAggregati
     return false
 end
 
-function aggregate_cut!(cutqueue::CutQueue, aggregation::GranulatedAggregation, metadata::MetaData, t::Integer, cut::HyperPlane, x::AbstractArray)
+function aggregate_cut!(cutqueue::CutQueue, aggregation::GranulatedAggregation, metadata::MetaDataChannel, t::Integer, cut::HyperPlane, x::AbstractArray)
     passthrough!(cutqueue, aggregation, cut, t, x)
     add_to_collection!(aggregation.collection, cut, x)
     if considered(aggregation.collection) == aggregation.size
@@ -92,7 +92,7 @@ function flush!(lshaped::AbstractLShaped, aggregation::GranulatedAggregation)
     return added
 end
 
-function flush!(cutqueue::CutQueue, aggregation::GranulatedAggregation, metadata::MetaData, t::Integer, x::AbstractArray)
+function flush!(cutqueue::CutQueue, aggregation::GranulatedAggregation, metadata::MetaDataChannel, t::Integer, x::AbstractArray)
     if collection_size(aggregation.collection) > 0 && collection_size(aggregation.collection) == considered(aggregation.collection)
         granulated_cut = aggregate(aggregation.collection)
         aggregate_cut!(cutqueue, aggregation.inner, metadata, t, granulated_cut, x)
@@ -107,7 +107,7 @@ end
 """
     GranulatedAggregate
 
-Factory object for [`GranulatedAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or by setting the [`Aggregator`](@ref) attribute.  See ?GranulatedAggregation for parameter descriptions.
+Factory object for [`GranulatedAggregation`](@ref). Pass to `aggregate` in `LShaped.Optimizer` or set the [`Aggregator`](@ref) attribute.  See ?GranulatedAggregation for parameter descriptions.
 
 """
 mutable struct GranulatedAggregate <: AbstractAggregator

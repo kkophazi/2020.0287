@@ -1,10 +1,12 @@
+# Deterministic equivalent optimization #
+# ===================================== #
 function optimize!(structure::DeterministicEquivalent, optimizer::MOI.AbstractOptimizer, x₀::AbstractVector)
     # Sanity check
     backend(structure.model) === optimizer || error("Stochastic program optimizer has not been connected to the deterministically equivalent problem.")
     # Crash if supported
     if MOI.supports(optimizer, MOI.VariablePrimalStart(), MOI.VariableIndex)
-        for (i, idx) in enumerate(all_decisions(structure))
-            MOI.set(optimizer, MOI.VariablePrimalStart(), idx, x₀[i])
+        for (i, dvar) in enumerate(all_decision_variables(structure.model, 1))
+            MOI.set(optimizer, MOI.VariablePrimalStart(), index(dvar), x₀[i])
         end
     end
     # Run standard MOI optimization procedure
@@ -66,7 +68,7 @@ function cache_solution!(stochasticprogram::StochasticProgram{2}, structure::Det
     # Cache first-stage solution
     cache[:node_solution_1] = SolutionCache(backend(structure.model), variables, constraints)
     try
-        Q = MOIU.eval_variables(structure.sub_objectives[1][1][2]) do idx
+        Q = MOIU.eval_variables(structure.decisions.stage_objectives[1][1][2]) do idx
             return MOI.get(backend(structure.model), MOI.VariablePrimal(), idx)
         end
         cache[:node_solution_1].modattr[MOI.ObjectiveValue()] = Q
@@ -76,25 +78,19 @@ function cache_solution!(stochasticprogram::StochasticProgram{2}, structure::Det
     # Cache scenario-dependent solutions
     variables = decision_variables_at_stage(stochasticprogram, 2)
     constraints = decision_constraints_at_stage(stochasticprogram, 2)
-    for i in 1:num_scenarios(stochasticprogram, 2)
-        key = Symbol(:node_solution_2_, i)
+    for scenario_index in 1:num_scenarios(stochasticprogram, 2)
+        key = Symbol(:node_solution_2_, scenario_index)
         cache[key] = SolutionCache(backend(structure.model))
+        # Model attributes are shared
         cache_model_attributes!(cache[key], backend(structure.model))
-        cache_variable_attributes!(cache[key], backend(structure.model), variables) do index
-            structure.variable_map[(index, i)]
-        end
-        cache_constraint_attributes!(cache[key], backend(structure.model), constraints) do ci
-            if ci isa CI{SingleDecision}
-                return typeof(ci)(structure.variable_map[(MOI.VariableIndex(ci.value), i)].value)
-            else
-                return structure.constraint_map[(ci, i)]
-            end
-        end
+        # Variables/constraints are scenario-dependent
+        cache_variable_attributes!(cache[key], structure, variables, 2, scenario_index)
+        cache_constraint_attributes!(cache[key], structure, constraints, 2, scenario_index)
         # Cache subobjective
         if cache[key].modattr[MOI.TerminationStatus()] == MOI.OPTIMAL
             Q = 0.0
             try
-                Qᵢ = MOIU.eval_variables(structure.sub_objectives[1][i][2]) do idx
+                Qᵢ = MOIU.eval_variables(structure.decisions.stage_objectives[2][i][2]) do idx
                     return MOI.get(backend(structure.model), MOI.VariablePrimal(), idx)
                 end
                 cache[key].modattr[MOI.ObjectiveValue()] = Qᵢ

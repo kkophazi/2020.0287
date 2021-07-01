@@ -1,3 +1,5 @@
+# Deterministic equivalent evaluation #
+# =================================== #
 function evaluate_decision(structure::DeterministicEquivalent{2}, decision::AbstractVector)
     # Update decisions (checks handled by structure model)
     take_decisions!(structure.model, all_decision_variables(structure.model, 1), decision)
@@ -44,7 +46,7 @@ function statistically_evaluate_decision(structure::DeterministicEquivalent{2}, 
     N = num_scenarios(structure)
     Q = Vector{Float64}(undef, N)
     obj_sense = objective_sense(structure.model)
-    for (i, sub_objective) in enumerate(structure.sub_objectives[2])
+    for (i, sub_objective) in enumerate(structure.decisions.stage_objectives[2])
         (sub_sense, sub_obj) = sub_objective
         Qᵢ = MOIU.eval_variables(sub_obj) do idx
             return MOI.get(backend(structure.model), MOI.VariablePrimal(), idx)
@@ -58,7 +60,7 @@ function statistically_evaluate_decision(structure::DeterministicEquivalent{2}, 
     probabilities = map(1:num_scenarios(structure, 2)) do i
         probability(structure, 2, i)
     end
-    weights = Distributions.StatsBase.ProbabilityWeights(probabilities)
+    weights = ProbabilityWeights(probabilities)
     σ = std(Q, weights, corrected = true)
     return Q̂, σ
 end

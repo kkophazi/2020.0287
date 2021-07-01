@@ -54,12 +54,12 @@ end
 """
     DontRegularize
 
-Factory object for [`NoRegularization`](@ref). Passed by default to `regularize ` in the `LShapedSolver` factory function.
+Factory object for [`NoRegularization`](@ref). Passed by default to `regularize` in `LShaped.Optimizer`.
 
 """
 struct DontRegularize <: AbstractRegularizer end
 
-function (::DontRegularize)(::Decisions, ::AbstractVector)
+function (::DontRegularize)(::DecisionMap, ::AbstractVector)
     return NoRegularization()
 end
 

@@ -27,35 +27,67 @@ See also: [`DeterministicEquivalent`](@ref)
 """
 struct Deterministic <: StochasticInstantiation end
 """
+    StageDecomposition
+
+Instantiates with the `StageDecompositionStructure` on a single core.
+
+See also: [`StageDecompositionStructure`](@ref)
+"""
+struct StageDecomposition <: StochasticInstantiation end
+"""
     Vertical
 
-Instantiates with the `VerticalStructure` on a single core.
+Instantiates with the `StageDecompositionStructure` on a single core.
 
-See also: [`VerticalStructure`](@ref)
+See also: [`StageDecompositionStructure`](@ref)
 """
 struct Vertical <: StochasticInstantiation end
 """
+    ScenarioDecomposition
+
+Instantiates with the `ScenarioDecompositionStructure` on a single core.
+
+See also: [`ScenarioDecompositionStructure`](@ref)
+"""
+struct ScenarioDecomposition <: StochasticInstantiation end
+"""
     Horizontal
 
-Instantiates with the `HorizontalStructure` on a single core.
+Instantiates with the `ScenarioDecompositionStructure` on a single core.
 
-See also: [`HorizontalStructure`](@ref)
+See also: [`ScenarioDecompositionStructure`](@ref)
 """
 struct Horizontal <: StochasticInstantiation end
 """
+    DistributedStageDecomposition
+
+Instantiates with the `StageDecompositionStructure` on multiple cores.
+
+See also: [`StageDecompositionStructure`](@ref)
+"""
+struct DistributedStageDecomposition <: StochasticInstantiation end
+"""
     DistributedVertical
 
-Instantiates with the `VerticalStructure` on multiple cores.
+Instantiates with the `StageDecompositionStructure` on multiple cores.
 
-See also: [`VerticalStructure`](@ref)
+See also: [`StageDecompositionStructure`](@ref)
 """
 struct DistributedVertical <: StochasticInstantiation end
 """
+    DistributedScenarioDecomposition
+
+Instantiates with the `ScenarioDecompositionStructure` on multiple cores.
+
+See also: [`ScenarioDecompositionStructure`](@ref)
+"""
+struct DistributedScenarioDecomposition <: StochasticInstantiation end
+"""
     DistributedHorizontal
 
-Instantiates with the `HorizontalStructure` on multiple cores.
+Instantiates with the `ScenarioDecompositionStructure` on multiple cores.
 
-See also: [`HorizontalStructure`](@ref)
+See also: [`ScenarioDecompositionStructure`](@ref)
 """
 struct DistributedHorizontal <: StochasticInstantiation end
 """
@@ -74,17 +106,25 @@ function StochasticStructure end
 Returns a `StochasticInstantiation` based on the provided `instantiation` and `optimizer`. If an explicit `instantiation` is provided it is always prioritized. Otherwise, if `instantiation` is `UnspecifiedInstantiation`, returns whatever structure requested by the optimizer. Defaults to `Deterministic` if no optimizer is provided.
 """
 function default_structure(instantiation::StochasticInstantiation, optimizer)
-    return instantiation
+    if (instantiation isa DistributedStageDecomposition || instantiation isa DistributedVertical) && nworkers() == 1
+        @warn "The distributed stage-decomposition structure is not available in a single-core setup. Switching to the `StageDecomposition` structure by default."
+        return StageDecomposition()
+    elseif (instantiation isa DistributedScenarioDecomposition || instantiation isa DistributedHorizontal) && nworkers() == 1
+        @warn "The distributed scenario-decomposition structure is not available in a single-core setup. Switching to the `ScenarioDecomposition` structure by default."
+        return ScenarioDecomposition()
+    else
+        return instantiation
+    end
 end
 function default_structure(::UnspecifiedInstantiation, optimizer)
     if optimizer isa MOI.AbstractOptimizer
         if optimizer isa AbstractStructuredOptimizer
-            # default to vertical structure
+            # default to stage-decomposition structure
             if nworkers() > 1
                 # Distribute in memory if Julia processes are available
-                return DistributedVertical()
+                return DistributedStageDecomposition()
             else
-                return Vertical()
+                return StageDecomposition()
             end
         else
             # Default to DEP structure if standard MOI optimizer is given
@@ -146,7 +186,7 @@ function structure_name(structure::AbstractStochasticStructure)
 end
 function num_decisions(structure::AbstractStochasticStructure{N}, stage::Integer = 1) where N
     1 <= stage <= N || error("Stage $stage not in range 1 to $N.")
-    return length(structure.decisions[stage].undecided)
+    return num_decisions(structure.decisions, stage)
 end
 function scenario_type(structure::AbstractStochasticStructure, s::Integer = 2)
     return _scenario_type(scenarios(structure, s))

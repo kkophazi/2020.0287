@@ -12,18 +12,18 @@ using JuMP
 using MathOptInterface
 using StochasticPrograms
 using StochasticPrograms: AcceptableTermination
-using StochasticPrograms: UnspecifiedInstantiation, VerticalStructure, AbstractScenarioProblems, ScenarioProblems, DistributedScenarioProblems, DecisionChannel
+using StochasticPrograms: UnspecifiedInstantiation, StageDecompositionStructure, AbstractScenarioProblems, ScenarioProblems, DistributedScenarioProblems, DecisionChannel
 using StochasticPrograms: AbstractExecution, Serial, Synchronous, Asynchronous
-using StochasticPrograms: AbstractStructuredOptimizer, RelativeTolerance, MasterOptimizer, SubproblemOptimizer
-using StochasticPrograms: SingleDecisionSet, update_decision_constraint!
-using StochasticPrograms: set_known_decision!, update_known_decisions!, SingleKnownSet, KnownModification, KnownValuesChange
+using StochasticPrograms: AbstractStructuredOptimizer, set_master_optimizer!, set_subproblem_optimizer!
+using StochasticPrograms: DecisionMap, all_decisions, set_decision!, set_stage!, SingleDecisionSet, NoSpecifiedConstraint
+using StochasticPrograms: all_known_decisions, update_known_decisions!, KnownValuesChange, Known, KnownDecision
 using StochasticPrograms: add_subscript
-using StochasticPrograms: AbstractPenaltyterm, Quadratic, InfNorm, ManhattanNorm, initialize_penaltyterm!, update_penaltyterm!, remove_penalty!, remove_penalty_variables!, remove_penalty_constraints!
+using StochasticPrograms: AbstractPenaltyTerm, Quadratic, InfNorm, ManhattanNorm, initialize_penaltyterm!, update_penaltyterm!, remove_penalty!, remove_penalty_variables!, remove_penalty_constraints!
 using ProgressMeter
 using Clustering
 
 import Base: show, put!, wait, isready, take!, fetch, zero, +, length, size
-import StochasticPrograms: supports_structure, default_structure, check_loadable, load_structure!, restore_structure!, optimize!, optimizer_name, master_optimizer, subproblem_optimizer, num_subproblems, remove_penalty_variables!, remove_penalty_constraints!
+import StochasticPrograms: supports_structure, num_iterations, default_structure, check_loadable, load_structure!, restore_structure!, optimize!, optimizer_name, master_optimizer, subproblem_optimizer, num_subproblems, remove_penalty_variables!, remove_penalty_constraints!, relax_decision_integrality
 
 const MOI = MathOptInterface
 const MOIU = MOI.Utilities
@@ -35,6 +35,8 @@ export
     LShapedAlgorithm,
     num_cuts,
     num_iterations,
+    FeasibilityStrategy,
+    IgnoreFeasibility,
     FeasibilityCuts,
     Regularizer,
     RegularizationParameter,
@@ -55,6 +57,13 @@ export
     WithLevelSets,
     LV,
     WithLV,
+    IntegerStrategy,
+    IgnoreIntegers,
+    CombinatorialCuts,
+    Convexification,
+    Gomory,
+    LiftAndProject,
+    CuttingPlaneTree,
     Consolidator,
     DontConsolidate,
     Consolidate,
@@ -101,6 +110,7 @@ export
 
 # Include files
 include("types/types.jl")
+include("integer/integer.jl")
 include("consolidators/consolidation.jl")
 include("aggregators/aggregation.jl")
 include("regularizers/regularization.jl")

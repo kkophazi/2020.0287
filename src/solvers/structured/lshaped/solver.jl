@@ -34,10 +34,11 @@ Functor object for the L-shaped algorithm.
 """
 struct LShapedAlgorithm{T <: AbstractFloat,
                         A <: AbstractVector,
-                        ST <: VerticalStructure,
+                        ST <: StageDecompositionStructure,
                         M <: MOI.AbstractOptimizer,
                         E <: AbstractLShapedExecution,
-                        F <: AbstractFeasibility,
+                        F <: AbstractFeasibilityAlgorithm,
+                        I <: AbstractIntegerAlgorithm,
                         R <: AbstractRegularization,
                         Agg <: AbstractAggregation,
                         C <: AbstractConsolidation} <: AbstractLShaped
@@ -48,7 +49,7 @@ struct LShapedAlgorithm{T <: AbstractFloat,
 
     # Master
     master::M
-    decisions::Decisions
+    decisions::DecisionMap
     x::A
     Q_history::A
 
@@ -57,6 +58,9 @@ struct LShapedAlgorithm{T <: AbstractFloat,
 
     # Feasibility
     feasibility::F
+
+    # Integers
+    integer::I
 
     # Regularization
     regularization::R
@@ -71,9 +75,10 @@ struct LShapedAlgorithm{T <: AbstractFloat,
 
     progress::ProgressThresh{T}
 
-    function LShapedAlgorithm(structure::VerticalStructure,
+    function LShapedAlgorithm(structure::StageDecompositionStructure,
                               x₀::AbstractVector,
-                              feasibility_cuts::Bool,
+                              feasibility_strategy::AbstractFeasibilityStrategy,
+                              integer_strategy::AbstractIntegerStrategy,
                               _execution::AbstractExecution,
                               regularizer::AbstractRegularizer,
                               aggregator::AbstractAggregator,
@@ -90,10 +95,13 @@ struct LShapedAlgorithm{T <: AbstractFloat,
         ST = typeof(structure)
         M = typeof(backend(structure.first_stage))
         # Feasibility
-        feasibility = feasibility_cuts ? HandleFeasibility(T) : IgnoreFeasibility()
-        F = typeof(feasibility)
+        feasibility_algorithm = master(feasibility_strategy, T)
+        F = typeof(feasibility_algorithm)
+        # Integers
+        integer_algorithm = master(integer_strategy, T)
+        I = typeof(integer_algorithm)
         # Execution policy
-        execution = _execution(structure, F, T, A)
+        execution = _execution(structure, feasibility_strategy, integer_strategy, T, A)
         E = typeof(execution)
         # Regularization policy
         regularization = regularizer(structure.decisions[1], x₀_)
@@ -107,24 +115,25 @@ struct LShapedAlgorithm{T <: AbstractFloat,
         # Algorithm parameters
         params = LShapedParameters{T}(; kw...)
 
-        lshaped = new{T,A,ST,M,E,F,R,Agg,C}(structure,
-                                            n,
-                                            LShapedData{T}(),
-                                            params,
-                                            backend(structure.first_stage),
-                                            structure.decisions[1],
-                                            x₀_,
-                                            A(),
-                                            execution,
-                                            feasibility,
-                                            regularization,
-                                            Vector{MOI.VariableIndex}(),
-                                            Vector{CutConstraint}(),
-                                            Vector{SparseOptimalityCut{T}}(),
-                                            aggregation,
-                                            consolidation,
-                                            A(),
-                                            ProgressThresh(T(1.0), 0.0, "$(indentstr(params.indent))L-Shaped Gap "))
+        lshaped = new{T,A,ST,M,E,F,I,R,Agg,C}(structure,
+                                              n,
+                                              LShapedData{T}(),
+                                              params,
+                                              backend(structure.first_stage),
+                                              structure.decisions[1],
+                                              x₀_,
+                                              A(),
+                                              execution,
+                                              feasibility_algorithm,
+                                              integer_algorithm,
+                                              regularization,
+                                              Vector{MOI.VariableIndex}(),
+                                              Vector{CutConstraint}(),
+                                              Vector{SparseOptimalityCut{T}}(),
+                                              aggregation,
+                                              consolidation,
+                                              A(),
+                                              ProgressThresh(T(1.0), 0.0, "$(indentstr(params.indent))L-Shaped Gap "))
         # Initialize solver
         initialize!(lshaped)
         return lshaped
@@ -145,7 +154,7 @@ end
 
 function (lshaped::LShapedAlgorithm)()
     # Reset timer
-    lshaped.progress.tfirst = lshaped.progress.tlast = time()
+    lshaped.progress.tinit = lshaped.progress.tlast = time()
     # Start workers (if any)
     start_workers!(lshaped)
     # Start procedure

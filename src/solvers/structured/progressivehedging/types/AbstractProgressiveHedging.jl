@@ -1,10 +1,11 @@
 abstract type AbstractProgressiveHedging end
 
 StochasticPrograms.num_subproblems(ph::AbstractProgressiveHedging) = StochasticPrograms.num_subproblems(ph.structure, 2)
+num_iterations(ph::AbstractProgressiveHedging) = ph.data.iterations
 
 # Initialization #
 # ======================================================================== #
-function initialize!(ph::AbstractProgressiveHedging, penaltyterm::AbstractPenaltyterm)
+function initialize!(ph::AbstractProgressiveHedging, penaltyterm::AbstractPenaltyTerm)
     # Initialize progress meter
     ph.progress.thresh = sqrt(ph.parameters.ϵ₁ ^ 2 + ph.parameters.ϵ₂ ^ 2)
     # Initialize subproblems
@@ -24,7 +25,7 @@ function decision(ph::AbstractProgressiveHedging)
 end
 
 function decision(ph::AbstractProgressiveHedging, index::MOI.VariableIndex)
-    i = something(findfirst(i -> i == index, ph.decisions.undecided), 0)
+    i = something(findfirst(i -> i == index, all_decisions(ph.decisions)), 0)
     if iszero(i)
         throw(MOI.InvalidIndex(index))
     end
@@ -60,7 +61,7 @@ function log!(ph::AbstractProgressiveHedging; optimal = false, status = nothing)
         elseif status == MOI.DUAL_INFEASIBLE
             -Inf
         else
-            0.0
+            Q
         end
         ProgressMeter.update!(ph.progress, val,
                               showvalues = [

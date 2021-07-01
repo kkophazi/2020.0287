@@ -17,7 +17,7 @@ mutable struct Optimizer <: AbstractStructuredOptimizer
     sub_params::Dict{MOI.AbstractOptimizerAttribute, Any}
     execution::AbstractExecution
     penalizer::AbstractPenalizer
-    penaltyterm::AbstractPenaltyterm
+    penaltyterm::AbstractPenaltyTerm
     parameters::ProgressiveHedgingParameters{Float64}
 
     status::MOI.TerminationStatusCode
@@ -30,7 +30,7 @@ mutable struct Optimizer <: AbstractStructuredOptimizer
     function Optimizer(; subproblem_optimizer = nothing,
                        execution::AbstractExecution = nworkers() == 1 ? Serial() : Synchronous(),
                        penalty::AbstractPenalizer = Fixed(),
-                       penaltyterm::AbstractPenaltyterm = Quadratic(),
+                       penaltyterm::AbstractPenaltyTerm = Quadratic(),
                        kw...)
         return new(subproblem_optimizer,
                    Dict{MOI.AbstractOptimizerAttribute, Any}(),
@@ -49,49 +49,55 @@ end
 
 # Interface #
 # ========================== #
-function supports_structure(optimizer::Optimizer, ::HorizontalStructure)
+function supports_structure(optimizer::Optimizer, ::ScenarioDecompositionStructure)
     return true
 end
 
 function default_structure(::UnspecifiedInstantiation, optimizer::Optimizer)
     if optimizer.execution isa Serial && nworkers() == 1
-        return Horizontal()
+        return ScenarioDecomposition()
     else
-        return DistributedHorizontal()
+        return DistributedScenarioDecomposition()
     end
 end
 
-function check_loadable(optimizer::Optimizer, ::HorizontalStructure)
+function check_loadable(optimizer::Optimizer, ::ScenarioDecompositionStructure)
     if optimizer.subproblem_optimizer === nothing
-        msg = "Subproblem optimizer not set. Consider setting `SubproblemOptimizer` attribute."
-        throw(UnloadableStructure{Optimizer, HorizontalStructure}(msg))
+        msg = "Subproblem optimizer not set. Consider setting `SubProblemOptimizer` attribute."
+        throw(UnloadableStructure{Optimizer, ScenarioDecompositionStructure}(msg))
     end
     return nothing
 end
 
-function ensure_compatible_execution!(optimizer::Optimizer, ::HorizontalStructure{2, 1, <:Tuple{ScenarioProblems}})
+function ensure_compatible_execution!(optimizer::Optimizer, ::ScenarioDecompositionStructure{2, 1, <:Tuple{ScenarioProblems}})
     if !(optimizer.execution isa Serial)
-        @warn "Distributed execution policies are not compatible with a single-core horizontal structure. Switching to `Serial` execution by default."
+        @warn "Distributed execution policies are not compatible with a single-core scenario-decomposition structure. Switching to `Serial` execution by default."
         MOI.set(optimizer, Execution(), Serial())
     end
     return nothing
 end
 
-function ensure_compatible_execution!(optimizer::Optimizer, ::HorizontalStructure{2, 1, <:Tuple{DistributedScenarioProblems}})
+function ensure_compatible_execution!(optimizer::Optimizer, ::ScenarioDecompositionStructure{2, 1, <:Tuple{DistributedScenarioProblems}})
     if optimizer.execution isa Serial
-        @warn "Serial execution not compatible with distributed horizontal structure. Switching to `Synchronous` execution by default."
+        @warn "Serial execution not compatible with distributed scenario-decomposition structure. Switching to `Synchronous` execution by default."
         MOI.set(optimizer, Execution(), Synchronous())
     end
     return nothing
 end
 
-function load_structure!(optimizer::Optimizer, structure::HorizontalStructure, x₀::AbstractVector)
+function load_structure!(optimizer::Optimizer, structure::ScenarioDecompositionStructure, x₀::AbstractVector)
     # Sanity check
     check_loadable(optimizer, structure)
     # Restore structure if optimization has been run before
     restore_structure!(optimizer)
     # Ensure that execution policy is compatible
     ensure_compatible_execution!(optimizer, structure)
+    # Set subproblem optimizers
+    set_subproblem_optimizer!(structure, optimizer.subproblem_optimizer)
+    # Set subproblem optimizer attributes
+    for (attr, value) in optimizer.sub_params
+        MOI.set(scenarioproblems(structure), attr, value)
+    end
     # Create new progressive-hedging algorithm
     optimizer.progressivehedging = ProgressiveHedgingAlgorithm(structure,
                                                                x₀,
@@ -99,9 +105,6 @@ function load_structure!(optimizer::Optimizer, structure::HorizontalStructure, x
                                                                optimizer.penalizer,
                                                                optimizer.penaltyterm;
                                                                type2dict(optimizer.parameters)...)
-    for (attr, value) in optimizer.sub_params
-        MOI.set(scenarioproblems(optimizer.progressivehedging.structure), attr, value)
-    end
     return nothing
 end
 
@@ -116,15 +119,24 @@ function MOI.optimize!(optimizer::Optimizer)
     if optimizer.progressivehedging === nothing
         throw(StochasticProgram.UnloadedStructure{Optimizer}())
     end
-    start_time = time()
+    # Run progressive-hedging procedure
     optimizer.status = optimizer.progressivehedging()
+    # Check if optimal
     if optimizer.status == MOI.OPTIMAL
         optimizer.primal_status = MOI.FEASIBLE_POINT
         optimizer.dual_status = MOI.FEASIBLE_POINT
         optimizer.raw_status = "Progressive-hedging procedure converged to optimal solution."
     end
-    optimizer.solve_time = time() - start_time
+    # Extract solve time
+    optimizer.solve_time = optimizer.progressivehedging.progress.tlast - optimizer.progressivehedging.progress.tinit
     return nothing
+end
+
+function num_iterations(optimizer::Optimizer)
+    if optimizer.progressivehedging === nothing
+        throw(UnloadedStructure{Optimizer}())
+    end
+    return num_iterations(optimizer.progressivehedging)
 end
 
 function optimizer_name(optimizer::Optimizer)
@@ -190,34 +202,36 @@ function MOI.set(optimizer::Optimizer, ::DualTolerance, limit::Real)
 end
 
 function MOI.get(optimizer::Optimizer, ::MasterOptimizer)
-    return MOI.get(optimizer, SubproblemOptimizer())
+    return MOI.get(optimizer, SubProblemOptimizer())
 end
 
-function MOI.get(optimizer::Optimizer, ::SubproblemOptimizer)
+function MOI.get(optimizer::Optimizer, ::SubProblemOptimizer)
     if optimizer.subproblem_optimizer === nothing
         return MOI.get(optimizer, MasterOptimizer())
     end
     return MOI.OptimizerWithAttributes(optimizer.subproblem_optimizer, collect(optimizer.sub_params))
 end
 
-function MOI.set(optimizer::Optimizer, ::SubproblemOptimizer, optimizer_constructor)
+function MOI.set(optimizer::Optimizer, ::SubProblemOptimizer, optimizer_constructor)
     optimizer.subproblem_optimizer = optimizer_constructor
+    # Clear any old parameters
+    empty!(optimizer.sub_params)
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, ::SubproblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute)
+function MOI.get(optimizer::Optimizer, ::SubProblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute)
     if !haskey(optimizer.sub_params, attr)
         error("Subproblem optimizer attribute $(attr) has not been set.")
     end
     return optimizer.sub_params[attr]
 end
 
-function MOI.set(optimizer::Optimizer, ::SubproblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute, value)
+function MOI.set(optimizer::Optimizer, ::SubProblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute, value)
     optimizer.sub_params[attr] = value
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, param::RawSubproblemOptimizerParameter)
+function MOI.get(optimizer::Optimizer, param::RawSubProblemOptimizerParameter)
     moi_param = MOI.RawParameter(param.name)
     if !haskey(optimizer.sub_params, moi_param)
         error("Subproblem optimizer attribute $(param.name) has not been set.")
@@ -225,7 +239,7 @@ function MOI.get(optimizer::Optimizer, param::RawSubproblemOptimizerParameter)
     return optimizer.sub_params[moi_param]
 end
 
-function MOI.set(optimizer::Optimizer, param::RawSubproblemOptimizerParameter, value)
+function MOI.set(optimizer::Optimizer, param::RawSubProblemOptimizerParameter, value)
     moi_param = MOI.RawParameter(param.name)
     optimizer.sub_params[moi_param] = value
     return nothing
@@ -249,11 +263,11 @@ function MOI.set(optimizer::Optimizer, ::Penalizer, penalizer::AbstractPenalizer
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, ::Penaltyterm)
+function MOI.get(optimizer::Optimizer, ::PenaltyTerm)
     return optimizer.penaltyterm
 end
 
-function MOI.set(optimizer::Optimizer, ::Penaltyterm, penaltyterm::AbstractPenaltyterm)
+function MOI.set(optimizer::Optimizer, ::PenaltyTerm, penaltyterm::AbstractPenaltyTerm)
     optimizer.penaltyterm = penaltyterm
     return nothing
 end
@@ -425,7 +439,7 @@ function MOI.set(optimizer::Optimizer, attr::ScenarioDependentVariableAttribute,
     return MOI.set(optimizer.progressivehedging.structure, attr, index, value)
 end
 
-function MOI.set(optimizer::Optimizer, attr::ScenarioDependentVariableAttribute, ci::MOI.ConstraintIndex, value)
+function MOI.set(optimizer::Optimizer, attr::ScenarioDependentConstraintAttribute, ci::MOI.ConstraintIndex, value)
     # Fallback to subproblem optimizer through structure
     if optimizer.progressivehedging === nothing
         throw(UnloadedStructure{Optimizer}())

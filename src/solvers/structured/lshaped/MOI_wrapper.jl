@@ -19,7 +19,8 @@ mutable struct Optimizer <: AbstractStructuredOptimizer
     subproblem_optimizer
     master_params::Dict{MOI.AbstractOptimizerAttribute, Any}
     sub_params::Dict{MOI.AbstractOptimizerAttribute, Any}
-    feasibility_cuts::Bool
+    feasibility_strategy::AbstractFeasibilityStrategy
+    integer_strategy::AbstractIntegerStrategy
     execution::AbstractExecution
     regularizer::AbstractRegularizer
     aggregator::AbstractAggregator
@@ -36,7 +37,8 @@ mutable struct Optimizer <: AbstractStructuredOptimizer
 
     function Optimizer(; master_optimizer = nothing,
                        execution::AbstractExecution = nworkers() == 1 ? Serial() : Synchronous(),
-                       feasibility_cuts::Bool = false,
+                       feasibility_strategy::AbstractFeasibilityStrategy = IgnoreFeasibility(),
+                       integer_strategy::AbstractIntegerStrategy = IgnoreIntegers(),
                        regularize::AbstractRegularizer = DontRegularize(),
                        aggregate::AbstractAggregator = DontAggregate(),
                        consolidate::AbstractConsolidator = DontConsolidate(),
@@ -45,7 +47,8 @@ mutable struct Optimizer <: AbstractStructuredOptimizer
                    subproblem_optimizer,
                    Dict{MOI.AbstractOptimizerAttribute, Any}(),
                    Dict{MOI.AbstractOptimizerAttribute, Any}(),
-                   feasibility_cuts,
+                   feasibility_strategy,
+                   integer_strategy,
                    execution,
                    regularize,
                    aggregate,
@@ -62,70 +65,79 @@ end
 
 # Interface #
 # ========================== #
-function supports_structure(optimizer::Optimizer, ::VerticalStructure)
+function supports_structure(optimizer::Optimizer, ::StageDecompositionStructure)
     return true
 end
 
 function default_structure(::UnspecifiedInstantiation, optimizer::Optimizer)
     if optimizer.execution isa Serial && nworkers() == 1
-        return Vertical()
+        return StageDecomposition()
     else
-        return DistributedVertical()
+        return DistributedStageDecomposition()
     end
 end
 
-function check_loadable(optimizer::Optimizer, ::VerticalStructure)
+function check_loadable(optimizer::Optimizer, ::StageDecompositionStructure)
     if optimizer.master_optimizer === nothing
         msg = "Master optimizer not set. Consider setting `MasterOptimizer` attribute."
-        throw(UnloadableStructure{Optimizer, VerticalStructure}(msg))
+        throw(UnloadableStructure{Optimizer, StageDecompositionStructure}(msg))
     end
     return nothing
 end
 
-function ensure_compatible_execution!(optimizer::Optimizer, ::VerticalStructure{2, 1, <:Tuple{ScenarioProblems}})
+function ensure_compatible_execution!(optimizer::Optimizer, ::StageDecompositionStructure{2, 1, <:Tuple{ScenarioProblems}})
     if !(optimizer.execution isa Serial)
-        @warn "Distributed execution policies are not compatible with a single-core vertical structure. Switching to `Serial` execution by default."
+        @warn "Distributed execution policies are not compatible with a single-core stage-decomposition structure. Switching to `Serial` execution by default."
         MOI.set(optimizer, Execution(), Serial())
     end
     return nothing
 end
 
-function ensure_compatible_execution!(optimizer::Optimizer, ::VerticalStructure{2, 1, <:Tuple{DistributedScenarioProblems}})
+function ensure_compatible_execution!(optimizer::Optimizer, ::StageDecompositionStructure{2, 1, <:Tuple{DistributedScenarioProblems}})
     if optimizer.execution isa Serial
-        @warn "Serial execution not compatible with distributed vertical structure. Switching to `Synchronous` execution by default."
+        @warn "Serial execution not compatible with distributed stage-decomposition structure. Switching to `Synchronous` execution by default."
         MOI.set(optimizer, Execution(), Synchronous())
     end
     return nothing
 end
 
-function load_structure!(optimizer::Optimizer, structure::VerticalStructure, x₀::AbstractVector)
+function load_structure!(optimizer::Optimizer, structure::StageDecompositionStructure, x₀::AbstractVector)
     # Sanity check
     check_loadable(optimizer, structure)
-    # Default subproblem optimizer to master optimizer if
-    # none have been set
-    if optimizer.subproblem_optimizer === nothing
-        StochasticPrograms.set_subproblem_optimizer!(structure, optimizer.master_optimizer)
-    end
     # Restore structure if optimization has been run before
     restore_structure!(optimizer)
     # Ensure that execution policy is compatible
     ensure_compatible_execution!(optimizer, structure)
+    # Set master optimizer
+    set_master_optimizer!(structure, optimizer.master_optimizer)
+    # Default subproblem optimizer to master optimizer if
+    # none have been set
+    if optimizer.subproblem_optimizer === nothing
+        optimizer.subproblem_optimizer = optimizer.master_optimizer
+    end
+    # Set subproblem optimizers
+    set_subproblem_optimizer!(structure, optimizer.subproblem_optimizer)
+    # Supply the subproblem optimizer if the integer strategy requires it and none have been set
+    if optimizer.integer_strategy isa Convexification && optimizer.integer_strategy.parameters.optimizer === nothing
+        optimizer.integer_strategy.parameters.optimizer = MOI.OptimizerWithAttributes(optimizer.subproblem_optimizer, collect(optimizer.sub_params))
+    end
+    # Set any given master/sub optimizer attributes
+    for (attr, value) in optimizer.master_params
+        MOI.set(backend(structure.first_stage), attr, value)
+    end
+    for (attr, value) in optimizer.sub_params
+        MOI.set(scenarioproblems(structure), attr, value)
+    end
     # Create new L-shaped algorithm
     optimizer.lshaped = LShapedAlgorithm(structure,
                                          x₀,
-                                         optimizer.feasibility_cuts,
+                                         optimizer.feasibility_strategy,
+                                         optimizer.integer_strategy,
                                          optimizer.execution,
                                          optimizer.regularizer,
                                          optimizer.aggregator,
                                          optimizer.consolidator;
                                          type2dict(optimizer.parameters)...)
-    # Set any given master/sub optimizer attributes
-    for (attr, value) in optimizer.master_params
-        MOI.set(optimizer.lshaped.master, attr, value)
-    end
-    for (attr, value) in optimizer.sub_params
-        MOI.set(scenarioproblems(optimizer.lshaped.structure), attr, value)
-    end
     return nothing
 end
 
@@ -141,15 +153,24 @@ function MOI.optimize!(optimizer::Optimizer)
     if optimizer.lshaped === nothing
         throw(UnloadedStructure{Optimizer}())
     end
-    start_time = time()
+    # Run L-shaped procedure
     optimizer.status = optimizer.lshaped()
+    # Check if optimal
     if optimizer.status == MOI.OPTIMAL
         optimizer.primal_status = MOI.FEASIBLE_POINT
         optimizer.dual_status = MOI.FEASIBLE_POINT
         optimizer.raw_status = "L-shaped procedure converged to optimal solution."
     end
-    optimizer.solve_time = time() - start_time
+    # Extract solve time
+    optimizer.solve_time = optimizer.lshaped.progress.tlast - optimizer.lshaped.progress.tinit
     return nothing
+end
+
+function num_iterations(optimizer::Optimizer)
+    if optimizer.lshaped === nothing
+        throw(UnloadedStructure{Optimizer}())
+    end
+    return num_iterations(optimizer.lshaped)
 end
 
 function optimizer_name(optimizer::Optimizer)
@@ -221,6 +242,8 @@ end
 
 function MOI.set(optimizer::Optimizer, ::MasterOptimizer, optimizer_constructor)
     optimizer.master_optimizer = optimizer_constructor
+    # Clear any old parameters
+    empty!(optimizer.master_params)
     return nothing
 end
 
@@ -250,31 +273,33 @@ function MOI.set(optimizer::Optimizer, param::RawMasterOptimizerParameter, value
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, ::SubproblemOptimizer)
+function MOI.get(optimizer::Optimizer, ::SubProblemOptimizer)
     if optimizer.subproblem_optimizer === nothing
         return MOI.get(optimizer, MasterOptimizer())
     end
     return MOI.OptimizerWithAttributes(optimizer.subproblem_optimizer, collect(optimizer.sub_params))
 end
 
-function MOI.set(optimizer::Optimizer, ::SubproblemOptimizer, optimizer_constructor)
+function MOI.set(optimizer::Optimizer, ::SubProblemOptimizer, optimizer_constructor)
     optimizer.subproblem_optimizer = optimizer_constructor
+    # Clear any old parameters
+    empty!(optimizer.sub_params)
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, ::SubproblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute)
+function MOI.get(optimizer::Optimizer, ::SubProblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute)
     if !haskey(optimizer.sub_params, attr)
         error("Subproblem optimizer attribute $(attr) has not been set.")
     end
     return optimizer.sub_params[attr]
 end
 
-function MOI.set(optimizer::Optimizer, ::SubproblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute, value)
+function MOI.set(optimizer::Optimizer, ::SubProblemOptimizerAttribute, attr::MOI.AbstractOptimizerAttribute, value)
     optimizer.sub_params[attr] = value
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, param::RawSubproblemOptimizerParameter)
+function MOI.get(optimizer::Optimizer, param::RawSubProblemOptimizerParameter)
     moi_param = MOI.RawParameter(param.name)
     if !haskey(optimizer.sub_params, moi_param)
         error("Subproblem optimizer attribute $(param.name) has not been set.")
@@ -282,18 +307,27 @@ function MOI.get(optimizer::Optimizer, param::RawSubproblemOptimizerParameter)
     return optimizer.sub_params[moi_param]
 end
 
-function MOI.set(optimizer::Optimizer, param::RawSubproblemOptimizerParameter, value)
+function MOI.set(optimizer::Optimizer, param::RawSubProblemOptimizerParameter, value)
     moi_param = MOI.RawParameter(param.name)
     optimizer.sub_params[moi_param] = value
     return nothing
 end
 
-function MOI.get(optimizer::Optimizer, ::FeasibilityCuts)
-    return optimizer.feasibility_cuts
+function MOI.get(optimizer::Optimizer, ::FeasibilityStrategy)
+    return optimizer.feasibility_strategy
 end
 
-function MOI.set(optimizer::Optimizer, ::FeasibilityCuts, use_feasibility_cuts)
-    optimizer.feasibility_cuts = use_feasibility_cuts
+function MOI.set(optimizer::Optimizer, ::FeasibilityStrategy, strategy::AbstractFeasibilityStrategy)
+    optimizer.feasibility_strategy = strategy
+    return nothing
+end
+
+function MOI.get(optimizer::Optimizer, ::IntegerStrategy)
+    return optimizer.integer_strategy
+end
+
+function MOI.set(optimizer::Optimizer, ::IntegerStrategy, strategy::AbstractIntegerStrategy)
+    optimizer.integer_strategy = strategy
     return nothing
 end
 
@@ -392,7 +426,7 @@ function MOI.get(optimizer::Optimizer, attr::MOI.ListOfVariableIndices)
     list = MOI.get(optimizer.lshaped.structure, attr)
     # Remove the master variables
     filter!(vi -> !(vi in optimizer.lshaped.master_variables), list)
-    # Remove any auxilliary variables from regularization
+    # Remove any auxiliary variables from regularization
     filter_variables!(optimizer.lshaped.regularization, list)
     return list
 end
@@ -507,7 +541,7 @@ function MOI.set(optimizer::Optimizer, attr::ScenarioDependentVariableAttribute,
     return MOI.set(optimizer.lshaped.structure, attr, index, value)
 end
 
-function MOI.set(optimizer::Optimizer, attr::ScenarioDependentVariableAttribute, ci::MOI.ConstraintIndex, value)
+function MOI.set(optimizer::Optimizer, attr::ScenarioDependentConstraintAttribute, ci::MOI.ConstraintIndex, value)
     # Fallback to subproblem optimizer through structure
     if optimizer.lshaped === nothing
         throw(UnloadedStructure{Optimizer}())

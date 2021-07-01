@@ -8,6 +8,7 @@ end
 @with_kw mutable struct ProgressiveHedgingParameters{T <: AbstractFloat}
     ϵ₁::T = 1e-5
     ϵ₂::T = 1e-5
+    time_limit::T = Inf
     log::Bool = true
     keep::Bool = true
     offset::Int = 0
@@ -27,17 +28,17 @@ Functor object for the progressive-hedging algorithm. Create using the `Progress
 """
 struct ProgressiveHedgingAlgorithm{T <: AbstractFloat,
                                    A <: AbstractVector,
-                                   ST <: HorizontalStructure,
+                                   ST <: ScenarioDecompositionStructure,
                                    E <: AbstractProgressiveHedgingExecution,
                                    P <: AbstractPenalization,
-                                   PT <: AbstractPenaltyterm} <: AbstractProgressiveHedging
+                                   PT <: AbstractPenaltyTerm} <: AbstractProgressiveHedging
     structure::ST
     data::ProgressiveHedgingData{T}
     parameters::ProgressiveHedgingParameters{T}
 
     # Estimate
     ξ::A
-    decisions::Decisions
+    decisions::DecisionMap
     Q_history::A
     primal_gaps::A
     dual_gaps::A
@@ -50,11 +51,11 @@ struct ProgressiveHedgingAlgorithm{T <: AbstractFloat,
     # Params
     progress::ProgressThresh{T}
 
-    function ProgressiveHedgingAlgorithm(structure::HorizontalStructure,
+    function ProgressiveHedgingAlgorithm(structure::ScenarioDecompositionStructure,
                                          x₀::AbstractVector,
                                          executer::AbstractExecution,
                                          penalizer::AbstractPenalizer,
-                                         penaltyterm::AbstractPenaltyterm; kw...)
+                                         penaltyterm::AbstractPenaltyTerm; kw...)
         # Sanity checks
         length(x₀) != num_decisions(structure) && error("Incorrect length of starting guess, has ", length(x₀), " should be ", num_decisions(structure))
         num_subproblems == 0 && error("No subproblems in stochastic program. Cannot run progressive-hedging procedure.")
@@ -107,7 +108,7 @@ end
 
 function (ph::ProgressiveHedgingAlgorithm)()
     # Reset timer
-    ph.progress.tfirst = ph.progress.tlast = time()
+    ph.progress.tinit = ph.progress.tlast = time()
     # Start workers (if any)
     start_workers!(ph)
     # Start procedure

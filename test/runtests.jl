@@ -1,6 +1,7 @@
 using StochasticPrograms
 using JuMP
 using GLPK
+using Ipopt
 using Distributed
 using Distributions
 using LinearAlgebra
@@ -10,6 +11,9 @@ using Test
 import StochasticPrograms: probability, expected
 
 include("decisions/decisions.jl")
+TestDecisionFunctions.runtests()
+TestDecisionExpressions.runtests()
+TestDecisionOperators.runtests()
 TestDecisionVariable.runtests()
 TestDecisionConstraint.runtests()
 TestDecisionObjective.runtests()

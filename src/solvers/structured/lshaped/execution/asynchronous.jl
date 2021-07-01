@@ -10,18 +10,20 @@ end
 Functor object for using synchronous execution in an L-shaped algorithm (assuming multiple Julia cores are available). Create by supplying a [`Asynchronous`](@ref) object through `execution` in the `LShapedSolver` factory function and then pass to a `StochasticPrograms.jl` model.
 
 """
-struct AsynchronousExecution{H <: AbstractFeasibilityHandler,
-                             T <: AbstractFloat,
-                             A <: AbstractVector} <: AbstractLShapedExecution
+struct AsynchronousExecution{T <: AbstractFloat,
+                             A <: AbstractVector,
+                             F <: AbstractFeasibilityAlgorithm,
+                             I <: AbstractIntegerAlgorithm} <: AbstractLShapedExecution
     data::AsynchronousData{T}
     subobjectives::Vector{A}
     model_objectives::Vector{A}
     finished::Vector{Int}
-    subworkers::Vector{SubWorker{H,T}}
+    subworkers::Vector{SubWorker{T,F,I}}
     decisions::Vector{DecisionChannel}
     work::Vector{Work}
     finalize::Vector{Work}
-    metadata::Vector{MetaData}
+    metadata::MetaDataChannel
+    remote_metadata::Vector{MetaDataChannel}
     iterates::RemoteIterates{A}
     cutqueue::CutQueue{T}
     active_workers::Vector{Future}
@@ -30,35 +32,40 @@ struct AsynchronousExecution{H <: AbstractFeasibilityHandler,
     max_active::Int
     κ::T
 
-    function AsynchronousExecution(structure::VerticalStructure{2, 1, <:Tuple{DistributedScenarioProblems}},
+    function AsynchronousExecution(structure::StageDecompositionStructure{2, 1, <:Tuple{DistributedScenarioProblems}},
                                    max_active::Int, κ::T,
-                                   ::Type{F}, ::Type{T}, ::Type{A}) where {F <: AbstractFeasibility,
-                                                                           T <: AbstractFloat,
-                                                                           A <: AbstractVector}
-        H = HandlerType(F)
-        return new{H,T,A}(AsynchronousData{T}(),
-                          Vector{A}(),
-                          Vector{A}(),
-                          Vector{Int}(),
-                          Vector{SubWorker{H,T}}(undef, nworkers()),
-                          scenarioproblems(structure).decisions,
-                          Vector{Work}(undef, nworkers()),
-                          Vector{Work}(undef, nworkers()),
-                          Vector{MetaData}(undef, nworkers()),
-                          RemoteChannel(() -> IterateChannel(Dict{Int,A}())),
-                          RemoteChannel(() -> Channel{QCut{T}}(max_active * nworkers() * num_scenarios(structure))),
-                          Vector{Future}(undef, nworkers()),
-                          Vector{Bool}(),
-                          Vector{Bool}(),
-                          max_active,
-                          κ)
+                                   feasibility_strategy::AbstractFeasibilityStrategy,
+                                   integer_strategy::AbstractIntegerStrategy,
+                                   ::Type{T},
+                                   ::Type{A}) where {T <: AbstractFloat,
+                                                     A <: AbstractVector}
+        F = worker_type(feasibility_strategy)
+        I = worker_type(integer_strategy)
+        execution = new{T,A,F,I}(AsynchronousData{T}(),
+                                 Vector{A}(),
+                                 Vector{A}(),
+                                 Vector{Int}(),
+                                 Vector{SubWorker{T,F,I}}(undef, nworkers()),
+                                 scenarioproblems(structure).decisions,
+                                 Vector{Work}(undef, nworkers()),
+                                 Vector{Work}(undef, nworkers()),
+                                 RemoteChannel(() -> MetaChannel()),
+                                 Vector{MetaDataChannel}(undef, nworkers()),
+                                 RemoteChannel(() -> IterateChannel(Dict{Int,A}())),
+                                 RemoteChannel(() -> Channel{QCut{T}}(max_active * nworkers() * num_scenarios(structure))),
+                                 Vector{Future}(undef, nworkers()),
+                                 Vector{Bool}(),
+                                 Vector{Bool}(),
+                                 max_active,
+                                 κ)
+        # Start loading subproblems
+        load_subproblems!(execution.subworkers,
+                          scenarioproblems(structure, 2),
+                          execution.decisions,
+                          feasibility_strategy,
+                          integer_strategy)
+        return execution
     end
-end
-
-function initialize_subproblems!(execution::AsynchronousExecution,
-                                 scenarioproblems::DistributedScenarioProblems)
-    load_subproblems!(execution.subworkers, scenarioproblems, execution.decisions)
-    return nothing
 end
 
 function finish_initilization!(lshaped::AbstractLShaped, execution::AsynchronousExecution)
@@ -77,9 +84,9 @@ function finish_initilization!(lshaped::AbstractLShaped, execution::Asynchronous
     for w in workers()
         execution.work[w-1] = RemoteChannel(() -> Channel{Int}(execution.max_active+1), w)
         execution.finalize[w-1] = RemoteChannel(() -> Channel{Int}(1), w)
-        execution.metadata[w-1] = RemoteChannel(() -> MetaChannel(), w)
+        execution.remote_metadata[w-1] = RemoteChannel(() -> MetaChannel(), w)
         put!(execution.work[w-1], 1)
-        put!(execution.metadata[w-1], 1, :gap, Inf)
+        put!(execution.remote_metadata[w-1], 1, :gap, Inf)
     end
     return nothing
 end
@@ -95,7 +102,8 @@ function start_workers!(lshaped::AbstractLShaped, execution::AsynchronousExecuti
                                                    execution.finalize[w-1],
                                                    execution.cutqueue,
                                                    execution.iterates,
-                                                   execution.metadata[w-1],
+                                                   execution.metadata,
+                                                   execution.remote_metadata[w-1],
                                                    worker_aggregator)
     end
     return nothing
@@ -106,6 +114,11 @@ function close_workers!(::AbstractLShaped, execution::AsynchronousExecution)
     map((w, aw)->!isready(aw) && put!(w, t), execution.finalize, execution.active_workers)
     map((w, aw)->!isready(aw) && put!(w, -1), execution.work, execution.active_workers)
     map(wait, execution.active_workers)
+    return nothing
+end
+
+function mutate_subproblems!(mutator::Function, execution::AsynchronousExecution)
+    mutate_subproblems!(mutator, execution.subworkers)
     return nothing
 end
 
@@ -216,7 +229,7 @@ function solve_master!(lshaped::AbstractLShaped, execution::AsynchronousExecutio
     return status
 end
 
-function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{H,T}) where {H <: AbstractFeasibilityHandler, T <: AbstractFloat}
+function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{T}) where T <: AbstractFloat
     wait(execution.cutqueue)
     while isready(execution.cutqueue)
         new_iterate = false
@@ -248,7 +261,7 @@ function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{H,T
             # Update incumbent (if applicable)
             take_step!(lshaped)
             # Early optimality check if using level sets
-            if lshaped.regularization isa LevelSet && check_optimality(lshaped)
+            if lshaped.regularization isa LevelSet && check_optimality(lshaped, true)
                 # Resolve subproblems with optimal vector
                 lshaped.x .= decision(lshaped)
                 t = lshaped.data.iterations
@@ -256,7 +269,7 @@ function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{H,T
                 for w in workers()
                     if !isready(execution.active_workers[w-1])
                         put!(execution.work[w-1], t+1)
-                        put!(execution.metadata[w-1], t+1, :gap, gap(lshaped))
+                        put!(execution.remote_metadata[w-1], t+1, :gap, gap(lshaped))
                     end
                 end
                 execution.data.timestamp = t + 1
@@ -304,10 +317,16 @@ function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{H,T
             lshaped.data.θ = θ
             lshaped.θ_history[t] = θ
             # Check if optimal
-            if check_optimality(lshaped)
+            if check_optimality(lshaped, true)
                 # Optimal, final log
                 log!(lshaped, t)
                 return MOI.OPTIMAL
+            end
+            # Calculate time spent so far and check perform time limit check
+            time_spent = lshaped.progress.tlast - lshaped.progress.tinit
+            if time_spent >= lshaped.parameters.time_limit
+                log!(lshaped; status = MOI.TIME_LIMIT)
+                return MOI.TIME_LIMIT
             end
             # Log progress at current timestamp
             log_regularization!(lshaped, t)
@@ -316,7 +335,7 @@ function iterate!(lshaped::AbstractLShaped, execution::AsynchronousExecution{H,T
             for w in workers()
                 if !isready(execution.active_workers[w-1])
                     put!(execution.work[w-1], t+1)
-                    put!(execution.metadata[w-1], t+1, :gap, gap(lshaped))
+                    put!(execution.remote_metadata[w-1], t+1, :gap, gap(lshaped))
                 end
             end
             # New active iteration
@@ -341,11 +360,19 @@ end
 
 # API
 # ------------------------------------------------------------
-function (execution::Asynchronous)(structure::VerticalStructure{2, 1, <:Tuple{DistributedScenarioProblems}},
-                                   ::Type{F}, ::Type{T}, ::Type{A}) where {F <: AbstractFeasibility,
-                                                                           T <: AbstractFloat,
-                                                                           A <: AbstractVector}
-    return AsynchronousExecution(structure, execution.max_active, execution.κ, F, T, A)
+function (execution::Asynchronous)(structure::StageDecompositionStructure{2, 1, <:Tuple{DistributedScenarioProblems}},
+                                   feasibility_strategy::AbstractFeasibilityStrategy,
+                                   integer_strategy::AbstractIntegerStrategy,
+                                   ::Type{T},
+                                   ::Type{A}) where {T <: AbstractFloat,
+                                                     A <: AbstractVector}
+    return AsynchronousExecution(structure,
+                                 execution.max_active,
+                                 execution.κ,
+                                 feasibility_strategy,
+                                 integer_strategy,
+                                 T,
+                                 A)
 end
 
 function str(::Asynchronous)
