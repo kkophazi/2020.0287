@@ -12,7 +12,7 @@ by M. Biel and M. Johansson.
 
 This repository is a snapshot of the project, taken on 2021-07-01 from
 [https://github.com/martinbiel/StochasticPrograms.jl](https://github.com/martinbiel/StochasticPrograms.jl) at commit
-[`302400e4de2708d5fba50fedeb134c33f128b808`](https://github.com/martinbiel/StochasticPrograms.jl/commit/302400e4de2708d5fba50fedeb134c33f128b808),
+[`4bacecfc812b602fd338af22c1441e6ef481d722`](https://github.com/martinbiel/StochasticPrograms.jl/commit/4bacecfc812b602fd338af22c1441e6ef481d722),
 and is provided for historical interest.
 
 Readers are directed to [https://github.com/martinbiel/StochasticPrograms.jl](https://github.com/martinbiel/StochasticPrograms.jl)
@@ -364,6 +364,24 @@ evaluate_decision(sp_progressivehedging, x)
 Apart from solving the stochastic program, we can compute two classical measures of stochastic performance. The first measures the value of knowing the random outcome before making the decision. This is achieved by taking the expectation in the original model outside the minimization, to obtain the wait-and-see problem. Now, the first- and second-stage decisions are taken with knowledge about the uncertainty. If we assume that we know what the actual outcome will be, we would be interested in the optimal course of action in that scenario. This is the concept of wait-and-see models. For example if the first scenario is believed to be the actual outcome, we can define a wait-and-see model as follows:
 ```julia
 ws = WS(sp, ξ₁)
+print(ws)
+```
+```julia
+Min 100 x₁ + 150 x₂ - 24 y₁ - 28 y₂
+Subject to
+ x₁ ∈ Decisions
+ x₂ ∈ Decisions
+ y₁ ∈ RecourseDecisions
+ y₂ ∈ RecourseDecisions
+ x₁ ≥ 40.0
+ x₂ ≥ 20.0
+ y₁ ≥ 0.0
+ y₂ ≥ 0.0
+ x₁ + x₂ ≤ 120.0
+ -60 x₁ + 6 y₁ + 10 y₂ ≤ 0.0
+ -80 x₂ + 8 y₁ + 5 y₂ ≤ 0.0
+ y₁ ≤ 500.0
+ y₂ ≤ 100.0
 ```
 The optimal first-stage decision in this scenario can be determined through:
 ```julia
