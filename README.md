@@ -25,7 +25,18 @@ for the latest documentation.
 To cite this software, please cite the [paper]() using its DOI
 and the software itself, using the following DOI.
 
-<!-- [![DOI](https://zenodo.org/badge/290669197.svg)](https://zenodo.org/badge/latestdoi/290669197) -->
+[![DOI](https://zenodo.org/badge/319404787.svg)](https://zenodo.org/badge/latestdoi/319404787)
+
+Below is the BibTex for citing this version of the code.
+
+@article{stochasticprograms2021,
+  author    = {Martin Biel and Mikael Johansson},
+  title     = {StochasticPrograms.jl}, 
+  publisher = {INFORMS Journal on Computing},
+  year      = {2021},
+  doi       = {10.5281/zenodo.5595111},
+  url       = {https://github.com/INFORMSJoC/2020.0287},
+}
 
 ## Description
 
