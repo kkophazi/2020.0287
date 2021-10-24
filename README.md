@@ -29,6 +29,7 @@ and the software itself, using the following DOI.
 
 Below is the BibTex for citing this version of the code.
 
+```
 @article{stochasticprograms2021,
   author    = {Martin Biel and Mikael Johansson},
   title     = {StochasticPrograms.jl}, 
@@ -37,7 +38,7 @@ Below is the BibTex for citing this version of the code.
   doi       = {10.5281/zenodo.5595111},
   url       = {https://github.com/INFORMSJoC/2020.0287},
 }
-
+```
 ## Description
 
 StochasticPrograms.jl is a general purpose modeling framework for stochastic programming written in the Julia programming language. The framework includes both modeling tools and structure-exploiting optimization algorithms. Stochastic programming models can be efficiently formulated using expressive syntax and models can be instantiated, inspected, and analyzed interactively. The framework scales seamlessly to distributed environments. Small instances of a model can be run locally to ensure correctness, while larger instances are automatically distributed in a memory-efficient way onto supercomputers or clouds and solved using parallel optimization algorithms. These structure-exploiting solvers are based on variations of the classical L-shaped, progressive-hedging, and quasi-gradient algorithms.
